@@ -201,7 +201,9 @@ export function install(rt) {
       }
       // `next` cannot take new messages, so the rewritten request starts over; it
       // carries no image, so this listener lets it through.
-      yield* ctx.llm.stream({ ...options, messages: await withImagesAsText(options.messages, options.sessionId) })
+      const messages = await withImagesAsText(options.messages, options.sessionId)
+      rt.carryUsageTag?.(options.messages, messages)
+      yield* ctx.llm.stream({ ...options, messages })
     })()
   })
 

@@ -192,6 +192,26 @@ export function install(rt) {
       if (body.memoryAutoRecall === false) state.prefs.memoryAutoRecall = false
       else delete state.prefs.memoryAutoRecall
     }
+    // The user's model price table, per million tokens, keyed by "provider/model".
+    // `null` for a model removes its price; an unpriced model shows no money, never zero.
+    if (body.prices !== undefined) {
+      if (body.prices === null || typeof body.prices !== 'object' || Array.isArray(body.prices)) throw invalid('Prices must be an object keyed by model')
+      const next = { ...state.prefs.prices }
+      for (const [ref, price] of Object.entries(body.prices)) {
+        if (!/^[^/\s]+\/\S+$/.test(ref) || ref.length > 200) throw invalid(`Unknown model ${ref}`)
+        if (price === null) { delete next[ref]; continue }
+        const fields = ['input', 'cachedInput', 'output']
+        if (typeof price !== 'object' || fields.some(field => !(Number.isFinite(price[field]) && price[field] >= 0 && price[field] <= 10_000))) throw invalid('A price needs input, cachedInput and output, each from 0 to 10000 per million tokens')
+        next[ref] = Object.fromEntries(fields.map(field => [field, price[field]]))
+      }
+      if (Object.keys(next).length === 0) delete state.prefs.prices
+      else state.prefs.prices = next
+    }
+    if (body.priceCurrency !== undefined) {
+      if (body.priceCurrency === null || body.priceCurrency === 'USD') delete state.prefs.priceCurrency
+      else if (typeof body.priceCurrency === 'string' && /^[A-Z]{3}$/.test(body.priceCurrency)) state.prefs.priceCurrency = body.priceCurrency
+      else throw invalid('A currency is a three-letter code such as USD or CNY')
+    }
     if (body.memoryLimits !== undefined) {
       const sizes = Object.entries(body.memoryLimits ?? {}).filter(([scope, size]) => MEMORY_LIMIT_SCOPES.has(scope) && Number.isInteger(size) && size >= MEMORY_LIMIT_MIN && size <= MEMORY_LIMIT_MAX)
       if (sizes.length === 0) delete state.prefs.memoryLimits

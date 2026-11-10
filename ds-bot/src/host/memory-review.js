@@ -237,7 +237,7 @@ export function installReview(rt, memory) {
       key: seen.key, since, batch: await chatBatch(seen.sessionId, bot, since),
       keeper: bot, name: bot.name, home: ownScope(bot.id), teamWrites: () => writesTeam(bot.id),
       who: `The Bot: ${bot.name}${bot.role ? `, ${bot.role}` : ''}.`,
-      tag: { sessionId: rt.chatOf(bot.id), kind: 'memory' },
+      tag: { sessionId: rt.chatOf(bot.id), kind: 'memory-review' },
       alive: () => rt.botOf(bot.id) !== undefined,
       next: () => queueReview(seen),
     })
@@ -261,7 +261,7 @@ export function installReview(rt, memory) {
       key: seen.key, since, batch: groupBatch(room, since),
       keeper, name: `group "${live.name}"`, home: groupScope(live.id), teamWrites: () => false, group: true,
       who: `The group chat: "${live.name}", with the user and ${members.join(', ')}.`,
-      tag: { sessionId: live.id, kind: 'memory' },
+      tag: { sessionId: live.id, kind: 'memory-review' },
       alive: () => rt.botOf(keeper.id) !== undefined && rt.roomOf(live.id)?.members.includes(keeper.id) === true,
       next: () => queueReview({ ...seen, room }),
     })

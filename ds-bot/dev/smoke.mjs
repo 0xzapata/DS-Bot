@@ -372,6 +372,17 @@ await step('Writer starts a new session', () => api('bot-new-session', { botId: 
 })
 await step('the closed chat takes no input', () => api('send', { sessionId: writerBefore.sessionId, text: 'still there?' }).then(() => 'sent', error => error.message), value => expect(value !== 'sent', 'a send to the closed chat went through'))
 
+// Money on the Usage page: a priced model gets a price in the view, an unpriced one none.
+await step('a model price reaches the usage view', async () => {
+  const before = await api('usage', { timeZone: 'UTC' })
+  const model = before.models[0]
+  await api('set-prefs', { prices: { [model.key]: { input: 1, cachedInput: 0.1, output: 2 } } })
+  const after = await api('usage', { timeZone: 'UTC' })
+  await api('set-prefs', { prices: { [model.key]: null } })
+  return { key: model.key, after }
+}, ({ key, after }) => expect(after.models.find(model => model.key === key)?.price?.output === 2, 'the price did not reach the view')
+  ?? expect(after.models.filter(model => model.key !== key).every(model => model.price === undefined), 'an unpriced model got a price'))
+
 await step('update Writer', () => api('update-bot', { id: botNamed('Writer').id, role: 'Copywriter', instructions: 'Write the copy.' }), () => {
   const writer = botNamed('Writer')
   return expect(writer.role === 'Copywriter' && writer.instructions === 'Write the copy.', 'update not saved')

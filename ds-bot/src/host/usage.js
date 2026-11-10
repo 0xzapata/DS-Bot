@@ -9,12 +9,13 @@
 //
 // A call belongs to a Bot (its own chat, its group Sessions, their earlier parts, and
 // any Session forked or spawned under them), to a group chat's own Session, or to the
-// rest of DSH ("other").
+// rest of DSH ("other"). A call in a group chat also names that group. Money is the
+// tokens times the user's price table (prefs.prices); a model with no price has none.
 import { randomUUID } from 'node:crypto'
 import { mkdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const LEDGER_VERSION = 3
+const LEDGER_VERSION = 4
 const PAGE_MESSAGES = 400
 const PAGE_TIMEOUT_MS = 20_000
 const SCAN_TIMEOUT_MS = 180_000
@@ -144,14 +145,20 @@ function sqliteLedger(DatabaseSync, path) {
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec('PRAGMA journal_mode = WAL')
     const version = db.prepare('PRAGMA user_version').get().user_version
-    // Version 2 lacks only the seal's watermark, so its rows are kept and gain the column.
-    // Desktop and Web may open it at once: the version is read again under the write lock.
-    if (version === 2) {
+    // Version 2 lacks the seal's watermark and version 3 the group of a call's owner, so
+    // their rows are kept and gain the columns. Desktop and Web may open it at once: the
+    // version is read again under the write lock.
+    if (version === 2 || version === 3) {
       db.exec('BEGIN IMMEDIATE')
       try {
-        if (db.prepare('PRAGMA user_version').get().user_version === 2) {
-          db.exec(`ALTER TABLE marks ADD COLUMN listed INTEGER;
-            PRAGMA user_version = ${LEDGER_VERSION};`)
+        const now = db.prepare('PRAGMA user_version').get().user_version
+        if (now === 2 || now === 3) {
+          // Only the columns the file lacks, so a half-migrated file finishes cleanly.
+          const has = (table, column) => db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)
+          if (!has('marks', 'listed')) db.exec('ALTER TABLE marks ADD COLUMN listed INTEGER')
+          if (!has('owners', 'room')) db.exec('ALTER TABLE owners ADD COLUMN room TEXT')
+          if (!has('owners', 'room_name')) db.exec('ALTER TABLE owners ADD COLUMN room_name TEXT')
+          db.exec(`PRAGMA user_version = ${LEDGER_VERSION}`)
         }
         db.exec('COMMIT')
       } catch (error) {
@@ -167,7 +174,7 @@ function sqliteLedger(DatabaseSync, path) {
         CREATE TABLE calls (key TEXT PRIMARY KEY, session TEXT NOT NULL, time INTEGER NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL, live INTEGER NOT NULL, input INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, output INTEGER NOT NULL);
         CREATE INDEX calls_session ON calls (session);
         CREATE TABLE marks (session TEXT PRIMARY KEY, through INTEGER NOT NULL, fold TEXT NOT NULL, sealed INTEGER NOT NULL, listed INTEGER);
-        CREATE TABLE owners (session TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL);
+        CREATE TABLE owners (session TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, room TEXT, room_name TEXT);
         CREATE TABLE kinds (session TEXT PRIMARY KEY, kind TEXT NOT NULL);
         PRAGMA user_version = ${LEDGER_VERSION};`)
     }
@@ -175,8 +182,8 @@ function sqliteLedger(DatabaseSync, path) {
     const dropLogged = db.prepare('DELETE FROM calls WHERE session = ? AND live = 0')
     const getMark = db.prepare('SELECT through, fold, sealed, listed FROM marks WHERE session = ?')
     const setMark = db.prepare('INSERT OR REPLACE INTO marks (session, through, fold, sealed, listed) VALUES (?, ?, ?, ?, ?)')
-    const allOwners = db.prepare('SELECT session, owner, name FROM owners')
-    const putOwner = db.prepare('INSERT OR REPLACE INTO owners (session, owner, name) VALUES (?, ?, ?)')
+    const allOwners = db.prepare('SELECT session, owner, name, room, room_name AS roomName FROM owners')
+    const putOwner = db.prepare('INSERT OR REPLACE INTO owners (session, owner, name, room, room_name) VALUES (?, ?, ?, ?, ?)')
     const allKinds = db.prepare('SELECT session, kind FROM kinds')
     const putKind = db.prepare('INSERT OR REPLACE INTO kinds (session, kind) VALUES (?, ?)')
     const grouped = db.prepare(`SELECT session, provider, model, kind, time / ${SLOT_MS} AS slot, SUM(input) AS input, SUM(cache_read) AS cacheRead, SUM(cache_write) AS cacheWrite, SUM(output) AS output, COUNT(*) AS calls FROM calls GROUP BY session, provider, model, kind, slot`)
@@ -199,8 +206,8 @@ function sqliteLedger(DatabaseSync, path) {
         }
       },
       add: row => insert(row, true),
-      owners: () => new Map(allOwners.all().map(row => [row.session, { owner: row.owner, name: row.name }])),
-      setOwner: (session, owner) => putOwner.run(session, owner.owner, owner.name),
+      owners: () => new Map(allOwners.all().map(row => [row.session, { owner: row.owner, name: row.name, ...(row.room ? { room: row.room, roomName: row.roomName ?? '' } : {}) }])),
+      setOwner: (session, owner) => putOwner.run(session, owner.owner, owner.name, owner.room ?? null, owner.room === undefined ? null : owner.roomName ?? ''),
       kinds: () => new Map(allKinds.all().map(row => [row.session, row.kind])),
       setKind: (session, kind) => putKind.run(session, kind),
       groups: () => grouped.all().map(row => ({ ...row, slot: Number(row.slot) })),
@@ -307,8 +314,9 @@ export function install(rt) {
       for (const sessionId of [bot.id, rt.chatOf(bot.id), ...(bot.segments ?? []).map(segment => segment.sessionId)]) owners.set(sessionId, botOwner(bot))
     }
     for (const room of Object.values(state.rooms)) {
-      for (const sessionId of [rt.sessionOfRoom(room), ...(room.parts ?? []).map(segment => segment.sessionId)].filter(Boolean)) owners.set(sessionId, { owner: `room:${room.id}`, name: room.name })
-      const memberOwner = botId => ({ owner: botId, name: rt.botOf(botId)?.name ?? '' })
+      const inRoom = { room: room.id, roomName: room.name }
+      for (const sessionId of [rt.sessionOfRoom(room), ...(room.parts ?? []).map(segment => segment.sessionId)].filter(Boolean)) owners.set(sessionId, { owner: `room:${room.id}`, name: room.name, ...inRoom })
+      const memberOwner = botId => ({ owner: botId, name: rt.botOf(botId)?.name ?? '', ...inRoom })
       for (const [botId, sessionId] of Object.entries(room.sessions ?? {})) owners.set(sessionId, memberOwner(botId))
       for (const [botId, segments] of Object.entries(room.segments ?? {})) {
         for (const segment of segments) owners.set(segment.sessionId, memberOwner(botId))
@@ -416,7 +424,7 @@ export function install(rt) {
       const owners = liveOwners(listed, stored)
       for (const [sessionId, owner] of owners) {
         const before = stored.get(sessionId)
-        if (owner.name !== '' && (before?.owner !== owner.owner || before?.name !== owner.name)) ledger.setOwner(sessionId, owner)
+        if (owner.name !== '' && (before?.owner !== owner.owner || before?.name !== owner.name || before?.room !== owner.room || before?.roomName !== owner.roomName)) ledger.setOwner(sessionId, owner)
       }
       // Group membership vanishes with the room, but a call that happened in a
       // group chat must stay one, so the kind is remembered like the owner is.
@@ -522,7 +530,21 @@ export function install(rt) {
       }
       return ownerIndex.get(key)
     }
+    // The group a call happened in, by id; a deleted group keeps its last name.
+    const rooms = []
+    const roomIndex = new Map()
+    const roomOf = (sessionId) => {
+      const found = live.get(sessionId) ?? stored.get(sessionId)
+      if (found?.room === undefined) return -1
+      if (!roomIndex.has(found.room)) {
+        roomIndex.set(found.room, rooms.length)
+        const room = rt.roomOf(found.room)
+        rooms.push({ id: found.room, name: room?.name ?? found.roomName ?? '', ...(room ? {} : { deleted: true }) })
+      }
+      return roomIndex.get(found.room)
+    }
     const catalog = rt.cachedCatalog()
+    const prices = state.prefs?.prices ?? {}
     const models = []
     const modelIndex = new Map()
     const modelOf = (provider, model) => {
@@ -530,7 +552,8 @@ export function install(rt) {
       if (!modelIndex.has(key)) {
         modelIndex.set(key, models.length)
         const entry = catalog.find(item => item.ref === key)
-        models.push({ key, provider, model, name: entry?.name ?? model, ...(entry?.providerName ? { providerName: entry.providerName } : {}) })
+        const price = Object.hasOwn(prices, key) ? prices[key] : undefined
+        models.push({ key, provider, model, name: entry?.name ?? model, ...(entry?.providerName ? { providerName: entry.providerName } : {}), ...(price ? { price } : {}) })
       }
       return modelIndex.get(key)
     }
@@ -549,8 +572,9 @@ export function install(rt) {
     for (const group of ledger.groups()) {
       const kind = group.kind === 'turn' ? (groupSessions.has(group.session) || storedKinds.get(group.session) === 'group' ? 'group' : 'chat') : group.kind
       const row = [hourOf(group.slot * SLOT_MS), ownerOf(group.session), modelOf(group.provider, group.model), kindOf(kind)]
-      const id = row.join('\n')
-      const bucket = buckets.get(id) ?? [...row, 0, 0, 0, 0, 0]
+      const room = roomOf(group.session)
+      const id = `${row.join('\n')}\n${room}`
+      const bucket = buckets.get(id) ?? [...row, 0, 0, 0, 0, 0, room]
       bucket[4] += group.input
       bucket[5] += group.cacheRead
       bucket[6] += group.cacheWrite
@@ -558,11 +582,15 @@ export function install(rt) {
       bucket[8] += group.calls
       buckets.set(id, bucket)
     }
+    // Priced models carry `price` ({input, cachedInput, output} per million tokens in
+    // `currency`); one without stays unpriced, never free.
     return {
       owners,
       models,
       kinds,
-      // [hour, owner, model, kind, input, cacheRead, cacheWrite, output, calls]
+      rooms,
+      currency: state.prefs?.priceCurrency ?? 'USD',
+      // [hour, owner, model, kind, input, cacheRead, cacheWrite, output, calls, room (-1: none)]
       rows: [...buckets.values()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
       now: hourOf(Date.now()),
       scanning: scanning !== undefined,
@@ -575,9 +603,20 @@ export function install(rt) {
     if (messages !== null && typeof messages === 'object') tags.set(messages, tag)
     return messages
   }
+  // What a request is for, when its purpose ('compaction') covers several uses. Unlike a
+  // tag it leaves the request a Session's own (`ownRequest`), so the other listeners
+  // treat it as before.
+  const labels = new WeakMap()
+  const labelUsage = (messages, kind) => {
+    if (messages !== null && typeof messages === 'object') labels.set(messages, kind)
+    return messages
+  }
   const carryUsageTag = (from, to) => {
-    const tag = from !== null && typeof from === 'object' ? tags.get(from) : undefined
+    if (from === null || typeof from !== 'object') return
+    const tag = tags.get(from)
     if (tag !== undefined) tagUsage(to, tag)
+    const label = labels.get(from)
+    if (label !== undefined) labelUsage(to, label)
   }
   // DS Bot's own requests name the Session they serve, as some routes require, so
   // `sessionId` alone does not make a request that Session's own round; the tag does.
@@ -589,7 +628,7 @@ export function install(rt) {
     if (typeof sessionId !== 'string' || sessionId === '') return
     const owner = liveOwners(listed, book.owners()).get(sessionId)
     if (owner !== undefined && owner.name !== '') {
-      const stamp = `${owner.owner}\n${owner.name}`
+      const stamp = `${owner.owner}\n${owner.name}\n${owner.room ?? ''}\n${owner.roomName ?? ''}`
       if (journaled.get(sessionId) !== stamp) {
         journaled.set(sessionId, stamp)
         book.setOwner(sessionId, owner)
@@ -644,10 +683,10 @@ export function install(rt) {
           yield chunk
         }
       } finally {
-        if (usage !== undefined) record({ sessionId: tag?.sessionId ?? options.sessionId, kind: tag?.kind ?? options.purpose ?? 'other', provider: options.provider, model: options.model, usage })
+        if (usage !== undefined) record({ sessionId: tag?.sessionId ?? options.sessionId, kind: tag?.kind ?? labels.get(options.messages) ?? options.purpose ?? 'other', provider: options.provider, model: options.model, usage })
       }
     })()
   })
 
-  Object.assign(rt, { usageView, tagUsage, carryUsageTag, ownRequest })
+  Object.assign(rt, { usageView, tagUsage, labelUsage, carryUsageTag, ownRequest })
 }

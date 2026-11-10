@@ -1,10 +1,12 @@
 // The Usage page's numbers: the host's hourly rows, summed by hour, day, week, or month.
 
-// A view row: [hour, owner, model, kind, input, cacheRead, cacheWrite, output, calls].
+// A view row: [hour, owner, model, kind, input, cacheRead, cacheWrite, output, calls, room].
+// `room` is the group the call happened in (-1 for none); older hosts leave it out.
 export const HOUR = 0
 export const OWNER = 1
 export const MODEL = 2
 export const KIND = 3
+export const ROOM = 9
 
 export const HOUR_MS = 3_600_000
 export const DAY_MS = 86_400_000
@@ -88,9 +90,22 @@ export function bucketsOf(range, now) {
 }
 
 export const tokensOf = row => row[4] + row[5] + row[6] + row[7]
-const blank = () => ({ input: 0, cacheRead: 0, output: 0, calls: 0, total: 0 })
+
+// What a row cost under its model's price ({input, cachedInput, output} per million
+// tokens), or undefined when the model has no price. Cache writes bill as input.
+// ponytail: cache writes use the input price; add a cacheWrite price when a provider bills it apart.
+export function costOf(row, price) {
+  if (price === undefined) return undefined
+  return ((row[4] + row[6]) * price.input + row[5] * price.cachedInput + row[7] * price.output) / 1e6
+}
+// `cost` sums the priced rows; `unpriced` counts tokens whose model has no price, so a
+// sum with unpriced tokens never reads as complete.
+const blank = () => ({ input: 0, cacheRead: 0, output: 0, calls: 0, total: 0, cost: 0, unpriced: 0 })
 // Cache writes are billed as input, so they show as input.
-function addRow(sum, row) {
+function addRow(sum, row, price) {
+  const cost = costOf(row, price)
+  if (cost === undefined) sum.unpriced += tokensOf(row)
+  else sum.cost += cost
   sum.input += row[4] + row[6]
   sum.cacheRead += row[5]
   sum.output += row[7]
@@ -98,8 +113,8 @@ function addRow(sum, row) {
   sum.total += tokensOf(row)
   return sum
 }
-function addTo(map, key, row) {
-  map.set(key, addRow(map.get(key) ?? blank(), row))
+function addTo(map, key, row, price) {
+  map.set(key, addRow(map.get(key) ?? blank(), row, price))
 }
 
 // One range of the view, narrowed by `keep`. `seriesOf` names the stack a row joins in
@@ -118,7 +133,8 @@ export function summarize(view, range, keep = () => true, seriesOf = () => 'all'
     return week
   }
   const current = buckets.map(bucket => ({ ...bucket, sum: blank(), stacks: new Map() }))
-  const result = { buckets: current, total: blank(), previous: 0, owners: new Map(), models: new Map(), kinds: new Map() }
+  const result = { buckets: current, total: blank(), previous: 0, owners: new Map(), models: new Map(), kinds: new Map(), rooms: new Map() }
+  const priceOf = at => view.models?.[at]?.price
   for (const row of view.rows) {
     const hour = row[HOUR]
     if (hour < before || hour > to || !keep(row)) continue
@@ -129,13 +145,15 @@ export function summarize(view, range, keep = () => true, seriesOf = () => 'all'
     const at = index.get(keyOf(hour))
     if (at === undefined) continue
     const bucket = current[at]
-    addRow(bucket.sum, row)
-    addRow(result.total, row)
+    const price = priceOf(row[MODEL])
+    addRow(bucket.sum, row, price)
+    addRow(result.total, row, price)
     const series = seriesOf(row)
     bucket.stacks.set(series, (bucket.stacks.get(series) ?? 0) + tokensOf(row))
-    addTo(result.owners, row[OWNER], row)
-    addTo(result.models, row[MODEL], row)
-    addTo(result.kinds, row[KIND], row)
+    addTo(result.owners, row[OWNER], row, price)
+    addTo(result.models, row[MODEL], row, price)
+    addTo(result.kinds, row[KIND], row, price)
+    if ((row[ROOM] ?? -1) >= 0) addTo(result.rooms, row[ROOM], row, price)
   }
   return result
 }
@@ -156,4 +174,11 @@ export function percent(part, whole) {
   if (!(whole > 0) || !(part > 0)) return '0'
   const value = (part / whole) * 100
   return value < 1 ? '<1' : String(Math.round(value))
+}
+
+// Money for a sum: undefined when nothing in it is priced, so the page says "price not
+// set" instead of a zero. `partial` is true when some of its tokens have no price.
+export function moneyOf(sum) {
+  if (sum.total > 0 && sum.unpriced >= sum.total) return undefined
+  return { amount: sum.cost, partial: sum.unpriced > 0 }
 }

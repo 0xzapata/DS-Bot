@@ -5,7 +5,7 @@ import { BotAvatar, BotMark, RoomAvatar } from './mark.js'
 import { CalendarIcon, ChatsIcon, ChevronLeftIcon, ChevronRightIcon } from './icons.js'
 import { reducedMotion, useGlide } from './motion.js'
 import { dateLocale, t } from './i18n.js'
-import { DAY_MS, HOUR, HOUR_MS, MODEL, OWNER, RANGES, compact, dayKey, hourMs, mondayOf, percent, spanRange, summarize, tokensOf } from './usage-data.js'
+import { DAY_MS, HOUR, HOUR_MS, MODEL, OWNER, RANGES, compact, dayKey, hourMs, moneyOf, mondayOf, percent, spanRange, summarize, tokensOf } from './usage-data.js'
 
 // Usage page: the host's ledger as hourly rows, summed here by hour, day, week, or
 // month, over a preset range or days picked on a calendar. The overview stacks the
@@ -32,6 +32,19 @@ const soften = (paint, strength = 1) => {
 }
 
 const full = count => new Intl.NumberFormat(dateLocale()).format(Math.round(count))
+// Money in the price table's currency. A sum with no priced tokens says so instead of
+// showing zero; one with some unpriced tokens is marked as a lower bound.
+function moneyText(sum, currency) {
+  const money = moneyOf(sum)
+  if (money === undefined) return t('price not set')
+  let text
+  try {
+    text = new Intl.NumberFormat(dateLocale(), { style: 'currency', currency, maximumFractionDigits: money.amount < 1 ? 4 : 2 }).format(money.amount)
+  } catch {
+    text = `${money.amount.toFixed(money.amount < 1 ? 4 : 2)} ${currency}`
+  }
+  return money.partial ? `≥ ${text}` : text
+}
 const hitRate = sum => percent(sum.cacheRead, sum.input + sum.cacheRead)
 
 const dates = options => new Intl.DateTimeFormat(dateLocale(), { timeZone: 'UTC', ...options })
@@ -131,7 +144,7 @@ function ownerFace(owner, roster) {
 }
 
 function kindLabel(kind, botFocus) {
-  const labels = { chat: botFocus ? t('Own chat') : t('Conversations'), group: t('Group chats'), compaction: t('Compaction and handoff'), image: t('Image reading'), memory: t('Memory'), 'session-title': t('Titles'), btw: t('Side chat'), side: t('Side chat'), other: t('Other') }
+  const labels = { chat: botFocus ? t('Own chat') : t('Conversations'), group: t('Group chats'), compaction: t('Compaction and handoff'), steward: t('Context steward'), handoff: t('Handoff notes'), checkpoint: t('Checkpoints'), image: t('Image reading'), memory: t('Memory'), 'memory-review': t('Memory review'), 'session-title': t('Titles'), btw: t('Side chat'), side: t('Side chat'), other: t('Other') }
   return labels[kind] ?? kind
 }
 
@@ -144,7 +157,7 @@ function Tabs({ label, value, options, onChange, boxRef }) {
     options.map(([id, text, icon]) => h('button', { key: id, type: 'button', 'aria-pressed': value === id, onClick: () => onChange(id) }, icon ? h(icon) : null, text)))
 }
 
-function Stats({ range, total, previous }) {
+function Stats({ range, total, previous, currency }) {
   const shown = useTween(total.total)
   const change = previous > 0 ? Math.round(((total.total - previous) / previous) * 100) : null
   const cell = (label, value) => h('div', { className: 'bt-us-stat' }, h('span', { className: 'bt-us-stat-label' }, label), h('span', { className: 'bt-us-stat-value' }, value))
@@ -154,6 +167,7 @@ function Stats({ range, total, previous }) {
       h('span', { className: 'bt-us-stat-value' }, compact(shown), h('small', null, t('tokens')),
         change === null ? null : h('span', { className: 'bt-us-delta', title: compareText(range) },
           `${change >= 0 ? '↑' : '↓'} ${Math.abs(change)}%`))),
+    cell(t('Cost'), moneyText(total, currency)),
     cell(t('Cache hit rate'), `${hitRate(total)}%`),
     cell(t('Output'), compact(total.output)),
     cell(t('Calls'), full(total.calls)))
@@ -209,7 +223,7 @@ function Chart({ range, columns, series, tipSeries, by, onBy, onPick }) {
       }, h('i', { className: 'bt-us-dot', style: { background: entry.fill } }), entry.name))) : null)
 }
 
-function Row({ kind, glyph, name, sub, sum, whole, fill, index, onClick }) {
+function Row({ kind, glyph, name, sub, sum, whole, fill, index, onClick, currency }) {
   const width = whole > 0 ? Math.max(sum.total > 0 ? 2 : 0, (sum.total / whole) * 100) : 0
   return h(onClick ? 'button' : 'div', {
     className: 'bt-us-row', 'data-kind': kind, style: { '--i': index },
@@ -222,7 +236,33 @@ function Row({ kind, glyph, name, sub, sum, whole, fill, index, onClick }) {
       h('span', { className: 'bt-us-row-name' }, name),
       sub ? h('span', { className: 'bt-us-row-sub' }, sub) : null),
     h('span', { className: 'bt-us-track' }, h('span', { style: { width: `${width}%`, background: fill } }))),
-  h('span', { className: 'bt-us-row-num' }, h('b', null, compact(sum.total)), h('small', null, `${percent(sum.total, whole)}%`)))
+  h('span', { className: 'bt-us-row-num' }, h('b', null, compact(sum.total)), h('small', null, currency === undefined ? `${percent(sum.total, whole)}%` : `${percent(sum.total, whole)}% · ${moneyText(sum, currency)}`)))
+}
+
+// One model's price per million tokens, which the user sets. Cleared, the model has no
+// price again and its money reads "price not set".
+function PriceCard({ model, currency, actions, index }) {
+  const blank = { input: '', cachedInput: '', output: '' }
+  const shown = model.price ? Object.fromEntries(Object.entries(model.price).map(([key, value]) => [key, String(value)])) : blank
+  const [draft, setDraft] = useState(shown)
+  const [note, setNote] = useState('')
+  useEffect(() => { setDraft(shown) }, [model.key, JSON.stringify(model.price ?? null)])
+  const fields = [['input', t('Input')], ['cachedInput', t('Cached input')], ['output', t('Output')]]
+  const numbers = Object.fromEntries(fields.map(([key]) => [key, Number(draft[key])]))
+  const valid = fields.every(([key]) => draft[key].trim() !== '' && Number.isFinite(numbers[key]) && numbers[key] >= 0)
+  const save = (price) => {
+    setNote('')
+    void actions.setPrefs({ prices: { [model.key]: price } }).then(() => actions.refreshUsage?.()).catch(error => setNote(error?.message ?? String(error)))
+  }
+  return h('section', { className: 'bt-us-card bt-us-price', style: { '--i': index } },
+    h('div', { className: 'bt-us-card-head' }, h('h3', null, t('Price'), h('span', null, t('{currency} per million tokens', { currency })))),
+    h('div', { className: 'bt-us-price-row' },
+      fields.map(([key, label]) => h('label', { key, className: 'bt-field' }, h('span', null, label),
+        h('input', { className: 'bt-input', inputMode: 'decimal', value: draft[key], placeholder: t('Not set'), onChange: event => setDraft({ ...draft, [key]: event.target.value }) }))),
+      h('div', { className: 'bt-us-price-go' },
+        model.price ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => save(null) }, t('Clear')) : null,
+        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !valid, onClick: () => save(numbers) }, t('Save')))),
+    note ? h('p', { className: 'bt-error', role: 'alert' }, note) : null)
 }
 
 function ListCard({ title, count, index, children }) {
@@ -394,13 +434,16 @@ const focusOf = id => (typeof id !== 'string' ? null
   : id.startsWith('owner:') ? { kind: 'owner', key: id.slice('owner:'.length) }
   : null)
 
-export function UsagePage({ roster, actions, focusId }) {
+export function UsagePage({ roster, actions: shared, focusId }) {
   const [view, setView] = useState(null)
   const [error, setError] = useState('')
   const [rangeId, setRangeId] = useState('7d')
   const [span, setSpan] = useState(null)
   const [picking, setPicking] = useState(false)
   const [by, setBy] = useState('bot')
+  const [reload, setReload] = useState(0)
+  // The price card reads the view again after a save.
+  const actions = useMemo(() => ({ ...shared, refreshUsage: () => setReload(value => value + 1) }), [shared])
   const tabs = useRef(null)
   const focus = focusOf(focusId)
   useEffect(() => {
@@ -423,7 +466,7 @@ export function UsagePage({ roster, actions, focusId }) {
     }
     void load()
     return () => { stopped = true; clearTimeout(timer) }
-  }, [])
+  }, [reload])
 
   const today = view?.now.slice(0, 10)
   const range = rangeId === 'custom' && span
@@ -530,17 +573,24 @@ export function UsagePage({ roster, actions, focusId }) {
     ['custom', rangeId === 'custom' && span ? spanText(span.from, span.to) : t('Custom'), CalendarIcon],
   ]
   const whole = part.total.total
+  const currency = view.currency ?? 'USD'
   const ownerRow = ([at, sum], index, total = whole) => h(Row, {
-    key: `o${at}`, kind: faces[at].kind, glyph: faces[at].glyph(32), name: faces[at].name, sub: faces[at].sub, sum, whole: total, index,
+    key: `o${at}`, kind: faces[at].kind, glyph: faces[at].glyph(32), name: faces[at].name, sub: faces[at].sub, sum, whole: total, index, currency,
     fill: face ? soften(face.paint, 0.8) : fillOf.get(`o${at}`) ?? soften(faces[at].paint),
     onClick: () => pick({ kind: 'owner', key: view.owners[at].key }),
   })
   const modelRow = ([at, sum], index) => h(Row, {
-    key: `m${at}`, kind: 'model', glyph: models[at].glyph(32), name: models[at].name, sub: models[at].sub, sum, whole, index,
+    key: `m${at}`, kind: 'model', glyph: models[at].glyph(32), name: models[at].name, sub: models[at].sub, sum, whole, index, currency,
     fill: face ? soften(face.paint, 0.8) : fillOf.get(`m${at}`) ?? soften(models[at].paint),
     onClick: () => pick({ kind: 'model', key: view.models[at].key }),
   })
   const nothing = h('div', { className: 'bt-us-none' }, t('Nothing in this range.'))
+  // Calls made in a group chat, by group: its members' replies and its own Session.
+  const roomRows = ranked(part.rooms).map(([at, sum], index) => h(Row, {
+    key: `r${at}`, kind: 'room', name: view.rooms?.[at]?.name || t('Deleted group chat'), sub: view.rooms?.[at]?.deleted ? t('Deleted') : '', sum, whole, index, currency,
+    fill: face ? soften(face.paint, 0.8) : 'var(--bt-us-rest)',
+  }))
+  const groupCard = index => (roomRows.length > 0 ? h(ListCard, { key: 'groups', title: t('Groups'), count: roomRows.length, index }, roomRows) : null)
 
   let body
   if (face) {
@@ -550,7 +600,7 @@ export function UsagePage({ roster, actions, focusId }) {
     body = [
       h(Profile, { key: 'profile', face, range, share: all.total.total > 0 ? whole / all.total.total : 0 }),
       h('div', { key: 'sheet', className: 'bt-us-sheet' },
-        h(Stats, { key: 'stats', range, total: part.total, previous: part.previous }),
+        h(Stats, { key: 'stats', range, total: part.total, previous: part.previous, currency }),
         h(Chart, { key: 'chart', range, columns, series, tipSeries, onPick: pick }),
         h('div', { key: 'pair', className: 'bt-us-pair' },
           ownerAt >= 0
@@ -558,8 +608,9 @@ export function UsagePage({ roster, actions, focusId }) {
             : h(ListCard, { title: t('Who used it'), count: owners.length, index: 2 }, owners.length > 0 ? owners.map((entry, index) => ownerRow(entry, index)) : nothing),
           h(ListCard, { title: t('What for'), index: 3 },
             kinds.length > 0
-              ? kinds.map(([at, sum], index) => h(Row, { key: at, name: kindLabel(view.kinds[at], ownerAt >= 0 && isBot(ownerAt)), sum, whole, index, fill: soften(face.paint, 0.8) }))
+              ? kinds.map(([at, sum], index) => h(Row, { key: at, name: kindLabel(view.kinds[at], ownerAt >= 0 && isBot(ownerAt)), sum, whole, index, currency, fill: soften(face.paint, 0.8) }))
               : nothing)),
+        shaped.modelAt >= 0 ? h(PriceCard, { key: 'price', model: view.models[shaped.modelAt], currency, actions, index: 4 }) : groupCard(4),
         h(Heat, { key: 'heat', view, keep, paint: face.paint, index: 4 })),
     ]
   } else {
@@ -569,7 +620,7 @@ export function UsagePage({ roster, actions, focusId }) {
     const usedModels = ranked(all.models)
     body = [
       h('div', { key: 'sheet', className: 'bt-us-sheet' },
-        h(Stats, { key: 'stats', range, total: all.total, previous: all.previous }),
+        h(Stats, { key: 'stats', range, total: all.total, previous: all.previous, currency }),
         h(Chart, { key: 'chart', range, columns, series, tipSeries, by, onBy: setBy, onPick: pick }),
         h('div', { key: 'pair', className: 'bt-us-pair' },
           h(ListCard, { title: t('Bots'), count: bots.length, index: 2 },
@@ -578,6 +629,7 @@ export function UsagePage({ roster, actions, focusId }) {
             bots.length > 0 && rest.length > 0 ? h('div', { className: 'bt-us-split', role: 'separator' }) : null,
             rest.map((entry, index) => ownerRow(entry, bots.length + index))),
           h(ListCard, { title: t('Models'), count: usedModels.length, index: 3 }, usedModels.length > 0 ? usedModels.map(modelRow) : nothing)),
+        groupCard(4),
         h(Heat, { key: 'heat', view, keep, paint: 'var(--bt-accent)', index: 4 })),
     ]
   }
@@ -642,7 +694,7 @@ export const USAGE_CSS = `
 .bt-us-sheet>.bt-us-stats,.bt-us-sheet>.bt-us-card,.bt-us-sheet>.bt-us-pair>.bt-us-card{border-radius:0}
 .bt-us-sheet>:first-child{border-radius:16px 16px 0 0}
 .bt-us-sheet>:last-child{border-radius:0 0 16px 16px}
-.bt-us-stats{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;border-radius:16px;border:1px solid var(--bt-line);background:var(--bt-card);animation:bt-us-in .45s var(--bt-us-ease) backwards}
+.bt-us-stats{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr 1fr;border-radius:16px;border:1px solid var(--bt-line);background:var(--bt-card);animation:bt-us-in .45s var(--bt-us-ease) backwards}
 .bt-us-stat{display:flex;flex-direction:column;justify-content:flex-end;gap:6px;min-width:0;padding:16px 18px}
 .bt-us-stat+.bt-us-stat{border-left:1px solid var(--bt-line)}
 .bt-us-stat-label{overflow:hidden;font-size:12px;line-height:16px;color:var(--bt-ink-3);white-space:nowrap;text-overflow:ellipsis}
@@ -695,7 +747,11 @@ button.bt-us-row:hover{background:var(--bt-hover)}
 .bt-us-track>span{display:block;height:100%;border-radius:inherit;transform-origin:0 50%;animation:bt-us-fill .7s var(--bt-us-ease) backwards;animation-delay:calc(var(--i,0) * 35ms + 140ms);transition:width .45s var(--bt-us-ease)}
 .bt-us-row-num{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:52px;font-variant-numeric:tabular-nums}
 .bt-us-row-num b{font-size:13px;line-height:18px;font-weight:600}
-.bt-us-row-num small{font-size:11px;line-height:14px;color:var(--bt-ink-3)}
+.bt-us-row-num small{font-size:11px;line-height:14px;color:var(--bt-ink-3);white-space:nowrap}
+.bt-us-price-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:4px 18px 16px}
+.bt-us-price-row .bt-field{display:flex;flex-direction:column;gap:6px;flex:1 1 120px;min-width:0;font-size:12px;color:var(--bt-ink-2)}
+.bt-us-price-go{display:flex;gap:8px;margin-left:auto}
+.bt-us-price .bt-error{margin:0 18px 14px}
 .bt-us-split{height:1px;margin:6px 8px;background:var(--bt-line)}
 .bt-us-none{padding:18px 8px;font-size:12px;color:var(--bt-ink-3);text-align:center}
 .bt-us-glyph{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--bt-hover);color:var(--bt-ink-2)}

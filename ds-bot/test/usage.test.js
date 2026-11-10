@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { apply } from '../index.js'
+import { createRuntime } from '../index.js'
 import { foldCalls } from '../src/host/usage.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -101,7 +101,7 @@ function start(home, { listedExtra, logsExtra, subagentsExtra } = {}) {
   }
   let route
   ctx.connection.fetch.register = (options) => { route = options; return () => {} }
-  apply(ctx, { home })
+  const rt = createRuntime(ctx, { home })
   const call = async (endpoint, payload) => {
     const response = await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))
     return response.json()
@@ -111,7 +111,7 @@ function start(home, { listedExtra, logsExtra, subagentsExtra } = {}) {
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
-  return { call, ctx, home, meter, pages, stop, warnings }
+  return { call, ctx, home, meter, pages, rt, stop, warnings }
 }
 
 // Total tokens per owner name and use.
@@ -369,4 +369,51 @@ test('a projection hint without a sequence space is not used as a page cursor', 
   t.after(stop)
   const view = (await call('usage', { timeZone: 'Asia/Shanghai' })).value
   assert.equal(totals(view)['other/chat'], 44)
+})
+
+test('a price set in prefs reaches the view, a model without one stays unpriced, and group calls name their group', async (t) => {
+  const { call, meter, rt, stop } = start()
+  t.after(stop)
+  assert.equal((await call('set-prefs', { prices: { 'deepseek/v4-pro': { input: 1, cachedInput: 0.1, output: 4 } } })).ok, true)
+  const refused = await call('set-prefs', { prices: { 'deepseek/v4-pro': { input: -1, cachedInput: 0, output: 0 } } })
+  assert.equal(refused.ok, false)
+  const view = (await call('usage', { timeZone: 'UTC' })).value
+  const pro = view.models.find(model => model.key === 'deepseek/v4-pro')
+  assert.deepEqual(pro.price, { input: 1, cachedInput: 0.1, output: 4 })
+  assert.equal(view.models.find(model => model.key === 'kimi/k3').price, undefined)
+  assert.equal(view.currency, 'USD')
+  // Chief's group Session row carries the group; its own chat rows carry none.
+  assert.deepEqual(view.rooms, [{ id: 'r1', name: '研发群' }])
+  const groupRows = view.rows.filter(row => view.kinds[row[3]] === 'group')
+  assert.ok(groupRows.length > 0 && groupRows.every(row => row[9] === 0))
+  assert.ok(view.rows.filter(row => view.kinds[row[3]] === 'chat').every(row => row[9] === -1))
+  // Clearing the price leaves the model unpriced again.
+  await call('set-prefs', { prices: { 'deepseek/v4-pro': null } })
+  assert.equal((await call('usage', { timeZone: 'UTC' })).value.models.find(model => model.key === 'deepseek/v4-pro').price, undefined)
+  // A compaction request that names what it was for is filed under that use.
+  const messages = [{ role: 'user', content: [] }]
+  rt.labelUsage(messages, 'handoff')
+  await drain(meter({ sessionId: 's-b1', purpose: 'compaction', provider: 'deepseek', model: 'v4-flash', messages }, async function* () { yield { type: 'usage', usage: usage(3, 3) } }))
+  assert.equal(totals((await call('usage', { timeZone: 'UTC' })).value)['Chief/handoff'], 6)
+})
+
+test('a version 3 ledger keeps its rows and owners and gains the group columns', async (t) => {
+  const first = start()
+  const { home } = first
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
+  const chunk = { type: 'usage', usage: usage(1000, 100) }
+  await drain(first.meter({ sessionId: 's-b1', purpose: 'compaction', provider: 'deepseek', model: 'v4-flash', messages: [] }, async function* () { yield chunk }))
+  await first.call('usage', { timeZone: 'UTC' })
+  await first.ctx.dispose()
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'usage.sqlite'))
+  db.exec('ALTER TABLE owners DROP COLUMN room; ALTER TABLE owners DROP COLUMN room_name; PRAGMA user_version = 3')
+  db.close()
+
+  const second = start(home)
+  const view = (await second.call('usage', { timeZone: 'UTC' })).value
+  await second.ctx.dispose()
+  assert.equal(totals(view)['Chief/compaction'], 1100)
+  assert.deepEqual(view.rooms, [{ id: 'r1', name: '研发群' }])
+  assert.deepEqual(second.warnings, [])
 })

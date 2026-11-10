@@ -472,6 +472,9 @@ export function install(rt) {
   // output budget, so ask for the least the model offers — 'off' when it has one, else
   // its lowest level; a model without reasoning levels gets none. The output room is the
   // route's own cap, else the model's declared default, else the retry budget.
+  // The Usage page tells a handoff note from a checkpoint; both go out as 'compaction'.
+  const usageLabel = (messages, kind) => rt.labelUsage?.(messages, kind) ?? messages
+
   async function notePlan(route) {
     const info = await ctx.llm.resolveModelInfo(route.provider, route.model).catch(() => undefined)
     const efforts = info?.reasoning?.efforts ?? []
@@ -497,7 +500,7 @@ export function install(rt) {
         provider: route.provider,
         model: route.model,
         ...(effort === undefined ? {} : { reasoningEffort: effort }),
-        messages: [...messages, { role: 'user', content: [{ type: 'text', text: prompt }] }],
+        messages: usageLabel([...messages, { role: 'user', content: [{ type: 'text', text: prompt }] }], 'handoff'),
         toolHistory: session.toolHistory(),
         ...(header.tools ? { tools: [...header.tools] } : {}),
         maxTokens,
@@ -624,7 +627,7 @@ export function install(rt) {
         const assembler = new BlockAssembler()
         for await (const chunk of ctx.llm.stream({
           ...one,
-          messages: [...head, ...tail, { role: 'user', content: [{ type: 'text', text: prompt }] }],
+          messages: usageLabel([...head, ...tail, { role: 'user', content: [{ type: 'text', text: prompt }] }], 'checkpoint'),
           toolHistory: session.toolHistory(),
           ...(input.tools ? { tools: [...input.tools] } : {}),
           ...(maxTokens !== undefined ? { maxTokens } : {}),
@@ -671,7 +674,7 @@ export function install(rt) {
       model: route.model,
       ...(off ? { reasoningEffort: 'off' } : {}),
       system: STEWARD_SYSTEM,
-      messages: rt.tagUsage([{ role: 'user', content: [{ type: 'text', text: stewardRequest({ lines, midTurn, checkpoints: checkpointCount(session.deriveMessages()), group }) }] }], { sessionId: agent.id, kind: 'compaction' }),
+      messages: rt.tagUsage([{ role: 'user', content: [{ type: 'text', text: stewardRequest({ lines, midTurn, checkpoints: checkpointCount(session.deriveMessages()), group }) }] }], { sessionId: agent.id, kind: 'steward' }),
       maxTokens: STEWARD_MAX_TOKENS,
       sessionId: session.id,
       purpose: 'compaction',

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { RANGES, bucketsOf, compact, percent, spanOf, spanRange, summarize } from '../src/client/usage-data.js'
+import { RANGES, bucketsOf, compact, costOf, moneyOf, percent, spanOf, spanRange, summarize } from '../src/client/usage-data.js'
 
 const range = id => RANGES.find(item => item.id === id)
 // [hour, owner, model, kind, input, cacheRead, cacheWrite, output, calls]
@@ -41,7 +41,8 @@ test('a summary sums the range, the span before it, and each owner, model, and s
   const week = summarize(view, range('7d'), undefined, item => `o${item[1]}`)
   assert.equal(week.total.total, 172)
   // The cache write counts as input.
-  assert.deepEqual(week.total, { input: 122, cacheRead: 30, output: 20, calls: 4, total: 172 })
+  // No model has a price, so every token counts as unpriced and the cost stays 0.
+  assert.deepEqual(week.total, { input: 122, cacheRead: 30, output: 20, calls: 4, total: 172, cost: 0, unpriced: 172 })
   assert.equal(week.previous, 50)
   assert.equal(week.buckets[2].key, '2026-10-05')
   assert.equal(week.buckets[2].sum.total, 165)
@@ -121,4 +122,24 @@ test('counts read short and shares round', () => {
   assert.equal(percent(0, 300), '0')
   assert.equal(percent(1, 3), '33')
   assert.equal(percent(5, 0), '0')
+})
+
+test('money follows the price table, and a model with no price is never free', () => {
+  // input 1M uncached + 1M cache write, 2M cache read, 1M output.
+  const priced = ['2026-10-09 10', 0, 0, 0, 1e6, 2e6, 1e6, 1e6, 1, -1]
+  const unpriced = ['2026-10-09 11', 1, 1, 0, 5e5, 0, 0, 0, 1, 0]
+  const price = { input: 0.5, cachedInput: 0.1, output: 2 }
+  assert.equal(costOf(priced, price), 2 * 0.5 + 2 * 0.1 + 2)
+  assert.equal(costOf(priced, undefined), undefined)
+  const view = { now: '2026-10-09 22', models: [{ key: 'p/a', price }, { key: 'p/b' }], rooms: [{ id: 'r1', name: 'Team' }], rows: [priced, unpriced] }
+  const day = summarize(view, RANGES.find(item => item.id === '24h'))
+  assert.ok(Math.abs(day.models.get(0).cost - 3.2) < 1e-9)
+  // The unpriced model says "price not set", not zero.
+  assert.equal(moneyOf(day.models.get(1)), undefined)
+  // A total that mixes both is a lower bound.
+  assert.deepEqual({ ...moneyOf(day.total), amount: Math.round(moneyOf(day.total).amount * 100) / 100 }, { amount: 3.2, partial: true })
+  assert.equal(moneyOf(day.owners.get(0)).partial, false)
+  // Only the call made in a group counts for that group.
+  assert.deepEqual([...day.rooms.keys()], [0])
+  assert.equal(day.rooms.get(0).total, 5e5)
 })

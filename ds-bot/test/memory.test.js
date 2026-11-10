@@ -1277,7 +1277,7 @@ test('when a turn ends, the memory review keeps what the user said, through the 
   const meter = ctx.listeners.get('llm/stream').find(listener => /tags\.get/.test(String(listener)))
   for await (const chunk of meter(requests[0], async function* () { yield { type: 'usage', usage: { inputTokens: 40, outputTokens: 2 } } })) assert.equal(chunk.type, 'usage')
   const usage = (await call('usage', { timeZone: 'UTC' })).value
-  assert.deepEqual(usage.rows.map(row => [usage.owners[row[1]].name, usage.kinds[row[3]], row[4] + row[7]]), [['Writer', 'memory', 42]])
+  assert.deepEqual(usage.rows.map(row => [usage.owners[row[1]].name, usage.kinds[row[3]], row[4] + row[7]]), [['Writer', 'memory-review', 42]])
   const state = (await call('state', {})).value
   assert.deepEqual([state.memoryNews.b2.op, state.memoryNews.b2.text], ['add', 'Everyone should keep it plain'])
   assert.deepEqual(JSON.parse(read('reviewed.json')), { 'chat:b2': 21 })

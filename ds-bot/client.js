@@ -750,6 +750,17 @@ var ZH = {
   Pinned: "已置顶",
   "Mark as Unread": "标为未读",
   "Rename Bot": "重命名 Bot",
+  "price not set": "未设置价格",
+  Cost: "费用",
+  Price: "价格",
+  "{currency} per million tokens": "{currency} / 百万 tokens",
+  "Cached input": "缓存输入",
+  "Not set": "未设置",
+  Groups: "群聊",
+  "Context steward": "上下文管家",
+  "Handoff notes": "交接笔记",
+  Checkpoints: "检查点",
+  "Memory review": "记忆整理",
   "Start a new session with {name}? The current chat stays in history, and nothing from it is carried over.": "和 {name} 开一个新会话？当前对话留在历史里，内容不会带过去。",
   "Start a new session with this Bot": "和这个 Bot 开一个新会话",
   "Group settings": "群设置",
@@ -17250,6 +17261,7 @@ var HOUR = 0;
 var OWNER = 1;
 var MODEL = 2;
 var KIND = 3;
+var ROOM = 9;
 var HOUR_MS = 36e5;
 var DAY_MS = 864e5;
 var RANGES = [
@@ -17314,8 +17326,15 @@ function bucketsOf(range, now) {
   return buckets;
 }
 var tokensOf = (row) => row[4] + row[5] + row[6] + row[7];
-var blank2 = () => ({ input: 0, cacheRead: 0, output: 0, calls: 0, total: 0 });
-function addRow(sum, row) {
+function costOf(row, price) {
+  if (price === void 0) return void 0;
+  return ((row[4] + row[6]) * price.input + row[5] * price.cachedInput + row[7] * price.output) / 1e6;
+}
+var blank2 = () => ({ input: 0, cacheRead: 0, output: 0, calls: 0, total: 0, cost: 0, unpriced: 0 });
+function addRow(sum, row, price) {
+  const cost = costOf(row, price);
+  if (cost === void 0) sum.unpriced += tokensOf(row);
+  else sum.cost += cost;
   sum.input += row[4] + row[6];
   sum.cacheRead += row[5];
   sum.output += row[7];
@@ -17323,8 +17342,8 @@ function addRow(sum, row) {
   sum.total += tokensOf(row);
   return sum;
 }
-function addTo(map, key, row) {
-  map.set(key, addRow(map.get(key) ?? blank2(), row));
+function addTo(map, key, row, price) {
+  map.set(key, addRow(map.get(key) ?? blank2(), row, price));
 }
 function summarize(view, range, keep = () => true, seriesOf = () => "all") {
   const { buckets, from, to, before } = spanOf(range, view.now);
@@ -17340,7 +17359,8 @@ function summarize(view, range, keep = () => true, seriesOf = () => "all") {
     return week;
   };
   const current = buckets.map((bucket) => ({ ...bucket, sum: blank2(), stacks: /* @__PURE__ */ new Map() }));
-  const result = { buckets: current, total: blank2(), previous: 0, owners: /* @__PURE__ */ new Map(), models: /* @__PURE__ */ new Map(), kinds: /* @__PURE__ */ new Map() };
+  const result = { buckets: current, total: blank2(), previous: 0, owners: /* @__PURE__ */ new Map(), models: /* @__PURE__ */ new Map(), kinds: /* @__PURE__ */ new Map(), rooms: /* @__PURE__ */ new Map() };
+  const priceOf = (at) => view.models?.[at]?.price;
   for (const row of view.rows) {
     const hour = row[HOUR];
     if (hour < before || hour > to || !keep(row)) continue;
@@ -17351,13 +17371,15 @@ function summarize(view, range, keep = () => true, seriesOf = () => "all") {
     const at = index.get(keyOf(hour));
     if (at === void 0) continue;
     const bucket = current[at];
-    addRow(bucket.sum, row);
-    addRow(result.total, row);
+    const price = priceOf(row[MODEL]);
+    addRow(bucket.sum, row, price);
+    addRow(result.total, row, price);
     const series = seriesOf(row);
     bucket.stacks.set(series, (bucket.stacks.get(series) ?? 0) + tokensOf(row));
-    addTo(result.owners, row[OWNER], row);
-    addTo(result.models, row[MODEL], row);
-    addTo(result.kinds, row[KIND], row);
+    addTo(result.owners, row[OWNER], row, price);
+    addTo(result.models, row[MODEL], row, price);
+    addTo(result.kinds, row[KIND], row, price);
+    if ((row[ROOM] ?? -1) >= 0) addTo(result.rooms, row[ROOM], row, price);
   }
   return result;
 }
@@ -17376,6 +17398,10 @@ function percent2(part, whole) {
   const value = part / whole * 100;
   return value < 1 ? "<1" : String(Math.round(value));
 }
+function moneyOf(sum) {
+  if (sum.total > 0 && sum.unpriced >= sum.total) return void 0;
+  return { amount: sum.cost, partial: sum.unpriced > 0 };
+}
 
 // src/client/usage-page.js
 var import_react39 = require("react");
@@ -17393,6 +17419,17 @@ var soften = (paint, strength = 1) => {
   return paint.startsWith("linear-gradient(") ? paint.replace(/#[0-9a-f]{6}/gi, mix) : mix(paint);
 };
 var full = (count) => new Intl.NumberFormat(dateLocale()).format(Math.round(count));
+function moneyText(sum, currency) {
+  const money = moneyOf(sum);
+  if (money === void 0) return t("price not set");
+  let text;
+  try {
+    text = new Intl.NumberFormat(dateLocale(), { style: "currency", currency, maximumFractionDigits: money.amount < 1 ? 4 : 2 }).format(money.amount);
+  } catch {
+    text = `${money.amount.toFixed(money.amount < 1 ? 4 : 2)} ${currency}`;
+  }
+  return money.partial ? `≥ ${text}` : text;
+}
 var hitRate = (sum) => percent2(sum.cacheRead, sum.input + sum.cacheRead);
 var dates = (options) => new Intl.DateTimeFormat(dateLocale(), { timeZone: "UTC", ...options });
 var hourText = (ms) => `${String(new Date(ms).getUTCHours()).padStart(2, "0")}:00`;
@@ -17491,7 +17528,7 @@ function ownerFace(owner, roster) {
   return { kind: "other", name: t("Other"), sub: "", paint: "var(--bt-us-rest)", glyph: (size) => glyphBox(size, ChatsIcon) };
 }
 function kindLabel(kind, botFocus) {
-  const labels = { chat: botFocus ? t("Own chat") : t("Conversations"), group: t("Group chats"), compaction: t("Compaction and handoff"), image: t("Image reading"), memory: t("Memory"), "session-title": t("Titles"), btw: t("Side chat"), side: t("Side chat"), other: t("Other") };
+  const labels = { chat: botFocus ? t("Own chat") : t("Conversations"), group: t("Group chats"), compaction: t("Compaction and handoff"), steward: t("Context steward"), handoff: t("Handoff notes"), checkpoint: t("Checkpoints"), image: t("Image reading"), memory: t("Memory"), "memory-review": t("Memory review"), "session-title": t("Titles"), btw: t("Side chat"), side: t("Side chat"), other: t("Other") };
   return labels[kind] ?? kind;
 }
 function Tabs({ label, value, options, onChange, boxRef }) {
@@ -17505,7 +17542,7 @@ ${names}`, { box: boxRef });
     options.map(([id, text, icon2]) => (0, import_react39.createElement)("button", { key: id, type: "button", "aria-pressed": value === id, onClick: () => onChange(id) }, icon2 ? (0, import_react39.createElement)(icon2) : null, text))
   );
 }
-function Stats({ range, total, previous }) {
+function Stats({ range, total, previous, currency }) {
   const shown = useTween(total.total);
   const change = previous > 0 ? Math.round((total.total - previous) / previous * 100) : null;
   const cell = (label, value) => (0, import_react39.createElement)("div", { className: "bt-us-stat" }, (0, import_react39.createElement)("span", { className: "bt-us-stat-label" }, label), (0, import_react39.createElement)("span", { className: "bt-us-stat-value" }, value));
@@ -17528,6 +17565,7 @@ function Stats({ range, total, previous }) {
         )
       )
     ),
+    cell(t("Cost"), moneyText(total, currency)),
     cell(t("Cache hit rate"), `${hitRate(total)}%`),
     cell(t("Output"), compact(total.output)),
     cell(t("Calls"), full(total.calls))
@@ -17613,7 +17651,7 @@ function Chart({ range, columns: columns2, series, tipSeries, by, onBy, onPick }
     ) : null
   );
 }
-function Row2({ kind, glyph, name, sub, sum, whole, fill: fill2, index, onClick }) {
+function Row2({ kind, glyph, name, sub, sum, whole, fill: fill2, index, onClick, currency }) {
   const width = whole > 0 ? Math.max(sum.total > 0 ? 2 : 0, sum.total / whole * 100) : 0;
   return (0, import_react39.createElement)(
     onClick ? "button" : "div",
@@ -17636,7 +17674,45 @@ function Row2({ kind, glyph, name, sub, sum, whole, fill: fill2, index, onClick 
       ),
       (0, import_react39.createElement)("span", { className: "bt-us-track" }, (0, import_react39.createElement)("span", { style: { width: `${width}%`, background: fill2 } }))
     ),
-    (0, import_react39.createElement)("span", { className: "bt-us-row-num" }, (0, import_react39.createElement)("b", null, compact(sum.total)), (0, import_react39.createElement)("small", null, `${percent2(sum.total, whole)}%`))
+    (0, import_react39.createElement)("span", { className: "bt-us-row-num" }, (0, import_react39.createElement)("b", null, compact(sum.total)), (0, import_react39.createElement)("small", null, currency === void 0 ? `${percent2(sum.total, whole)}%` : `${percent2(sum.total, whole)}% · ${moneyText(sum, currency)}`))
+  );
+}
+function PriceCard({ model, currency, actions, index }) {
+  const blank3 = { input: "", cachedInput: "", output: "" };
+  const shown = model.price ? Object.fromEntries(Object.entries(model.price).map(([key, value]) => [key, String(value)])) : blank3;
+  const [draft, setDraft] = (0, import_react39.useState)(shown);
+  const [note, setNote] = (0, import_react39.useState)("");
+  (0, import_react39.useEffect)(() => {
+    setDraft(shown);
+  }, [model.key, JSON.stringify(model.price ?? null)]);
+  const fields = [["input", t("Input")], ["cachedInput", t("Cached input")], ["output", t("Output")]];
+  const numbers = Object.fromEntries(fields.map(([key]) => [key, Number(draft[key])]));
+  const valid = fields.every(([key]) => draft[key].trim() !== "" && Number.isFinite(numbers[key]) && numbers[key] >= 0);
+  const save = (price) => {
+    setNote("");
+    void actions.setPrefs({ prices: { [model.key]: price } }).then(() => actions.refreshUsage?.()).catch((error) => setNote(error?.message ?? String(error)));
+  };
+  return (0, import_react39.createElement)(
+    "section",
+    { className: "bt-us-card bt-us-price", style: { "--i": index } },
+    (0, import_react39.createElement)("div", { className: "bt-us-card-head" }, (0, import_react39.createElement)("h3", null, t("Price"), (0, import_react39.createElement)("span", null, t("{currency} per million tokens", { currency })))),
+    (0, import_react39.createElement)(
+      "div",
+      { className: "bt-us-price-row" },
+      fields.map(([key, label]) => (0, import_react39.createElement)(
+        "label",
+        { key, className: "bt-field" },
+        (0, import_react39.createElement)("span", null, label),
+        (0, import_react39.createElement)("input", { className: "bt-input", inputMode: "decimal", value: draft[key], placeholder: t("Not set"), onChange: (event) => setDraft({ ...draft, [key]: event.target.value }) })
+      )),
+      (0, import_react39.createElement)(
+        "div",
+        { className: "bt-us-price-go" },
+        model.price ? (0, import_react39.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => save(null) }, t("Clear")) : null,
+        (0, import_react39.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: !valid, onClick: () => save(numbers) }, t("Save"))
+      )
+    ),
+    note ? (0, import_react39.createElement)("p", { className: "bt-error", role: "alert" }, note) : null
   );
 }
 function ListCard({ title, count, index, children }) {
@@ -17862,13 +17938,15 @@ function Skeleton2() {
   );
 }
 var focusOf = (id) => typeof id !== "string" ? null : id.startsWith("model:") ? { kind: "model", key: id.slice("model:".length) } : id.startsWith("owner:") ? { kind: "owner", key: id.slice("owner:".length) } : null;
-function UsagePage({ roster, actions, focusId }) {
+function UsagePage({ roster, actions: shared2, focusId }) {
   const [view, setView] = (0, import_react39.useState)(null);
   const [error, setError] = (0, import_react39.useState)("");
   const [rangeId, setRangeId] = (0, import_react39.useState)("7d");
   const [span, setSpan] = (0, import_react39.useState)(null);
   const [picking, setPicking] = (0, import_react39.useState)(false);
   const [by, setBy] = (0, import_react39.useState)("bot");
+  const [reload, setReload] = (0, import_react39.useState)(0);
+  const actions = (0, import_react39.useMemo)(() => ({ ...shared2, refreshUsage: () => setReload((value) => value + 1) }), [shared2]);
   const tabs = (0, import_react39.useRef)(null);
   const focus = focusOf(focusId);
   (0, import_react39.useEffect)(() => {
@@ -17892,7 +17970,7 @@ function UsagePage({ roster, actions, focusId }) {
       stopped = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [reload]);
   const today = view?.now.slice(0, 10);
   const range = rangeId === "custom" && span ? { ...spanRange(span.from, span.to), ends: span.to >= today } : RANGES.find((item) => item.id === rangeId);
   const shaped = (0, import_react39.useMemo)(() => {
@@ -17993,6 +18071,7 @@ function UsagePage({ roster, actions, focusId }) {
     ["custom", rangeId === "custom" && span ? spanText(span.from, span.to) : t("Custom"), CalendarIcon]
   ];
   const whole = part.total.total;
+  const currency = view.currency ?? "USD";
   const ownerRow = ([at, sum], index, total = whole) => (0, import_react39.createElement)(Row2, {
     key: `o${at}`,
     kind: faces[at].kind,
@@ -18002,6 +18081,7 @@ function UsagePage({ roster, actions, focusId }) {
     sum,
     whole: total,
     index,
+    currency,
     fill: face ? soften(face.paint, 0.8) : fillOf.get(`o${at}`) ?? soften(faces[at].paint),
     onClick: () => pick2({ kind: "owner", key: view.owners[at].key })
   });
@@ -18014,10 +18094,23 @@ function UsagePage({ roster, actions, focusId }) {
     sum,
     whole,
     index,
+    currency,
     fill: face ? soften(face.paint, 0.8) : fillOf.get(`m${at}`) ?? soften(models[at].paint),
     onClick: () => pick2({ kind: "model", key: view.models[at].key })
   });
   const nothing = (0, import_react39.createElement)("div", { className: "bt-us-none" }, t("Nothing in this range."));
+  const roomRows = ranked(part.rooms).map(([at, sum], index) => (0, import_react39.createElement)(Row2, {
+    key: `r${at}`,
+    kind: "room",
+    name: view.rooms?.[at]?.name || t("Deleted group chat"),
+    sub: view.rooms?.[at]?.deleted ? t("Deleted") : "",
+    sum,
+    whole,
+    index,
+    currency,
+    fill: face ? soften(face.paint, 0.8) : "var(--bt-us-rest)"
+  }));
+  const groupCard = (index) => roomRows.length > 0 ? (0, import_react39.createElement)(ListCard, { key: "groups", title: t("Groups"), count: roomRows.length, index }, roomRows) : null;
   let body;
   if (face) {
     const kinds = ranked(part.kinds);
@@ -18028,7 +18121,7 @@ function UsagePage({ roster, actions, focusId }) {
       (0, import_react39.createElement)(
         "div",
         { key: "sheet", className: "bt-us-sheet" },
-        (0, import_react39.createElement)(Stats, { key: "stats", range, total: part.total, previous: part.previous }),
+        (0, import_react39.createElement)(Stats, { key: "stats", range, total: part.total, previous: part.previous, currency }),
         (0, import_react39.createElement)(Chart, { key: "chart", range, columns: columns2, series, tipSeries, onPick: pick2 }),
         (0, import_react39.createElement)(
           "div",
@@ -18037,9 +18130,10 @@ function UsagePage({ roster, actions, focusId }) {
           (0, import_react39.createElement)(
             ListCard,
             { title: t("What for"), index: 3 },
-            kinds.length > 0 ? kinds.map(([at, sum], index) => (0, import_react39.createElement)(Row2, { key: at, name: kindLabel(view.kinds[at], ownerAt >= 0 && isBot(ownerAt)), sum, whole, index, fill: soften(face.paint, 0.8) })) : nothing
+            kinds.length > 0 ? kinds.map(([at, sum], index) => (0, import_react39.createElement)(Row2, { key: at, name: kindLabel(view.kinds[at], ownerAt >= 0 && isBot(ownerAt)), sum, whole, index, currency, fill: soften(face.paint, 0.8) })) : nothing
           )
         ),
+        shaped.modelAt >= 0 ? (0, import_react39.createElement)(PriceCard, { key: "price", model: view.models[shaped.modelAt], currency, actions, index: 4 }) : groupCard(4),
         (0, import_react39.createElement)(Heat, { key: "heat", view, keep, paint: face.paint, index: 4 })
       )
     ];
@@ -18052,7 +18146,7 @@ function UsagePage({ roster, actions, focusId }) {
       (0, import_react39.createElement)(
         "div",
         { key: "sheet", className: "bt-us-sheet" },
-        (0, import_react39.createElement)(Stats, { key: "stats", range, total: all.total, previous: all.previous }),
+        (0, import_react39.createElement)(Stats, { key: "stats", range, total: all.total, previous: all.previous, currency }),
         (0, import_react39.createElement)(Chart, { key: "chart", range, columns: columns2, series, tipSeries, by, onBy: setBy, onPick: pick2 }),
         (0, import_react39.createElement)(
           "div",
@@ -18067,6 +18161,7 @@ function UsagePage({ roster, actions, focusId }) {
           ),
           (0, import_react39.createElement)(ListCard, { title: t("Models"), count: usedModels.length, index: 3 }, usedModels.length > 0 ? usedModels.map(modelRow) : nothing)
         ),
+        groupCard(4),
         (0, import_react39.createElement)(Heat, { key: "heat", view, keep, paint: "var(--bt-accent)", index: 4 })
       )
     ];
@@ -18136,7 +18231,7 @@ var USAGE_CSS = `
 .bt-us-sheet>.bt-us-stats,.bt-us-sheet>.bt-us-card,.bt-us-sheet>.bt-us-pair>.bt-us-card{border-radius:0}
 .bt-us-sheet>:first-child{border-radius:16px 16px 0 0}
 .bt-us-sheet>:last-child{border-radius:0 0 16px 16px}
-.bt-us-stats{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;border-radius:16px;border:1px solid var(--bt-line);background:var(--bt-card);animation:bt-us-in .45s var(--bt-us-ease) backwards}
+.bt-us-stats{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr 1fr;border-radius:16px;border:1px solid var(--bt-line);background:var(--bt-card);animation:bt-us-in .45s var(--bt-us-ease) backwards}
 .bt-us-stat{display:flex;flex-direction:column;justify-content:flex-end;gap:6px;min-width:0;padding:16px 18px}
 .bt-us-stat+.bt-us-stat{border-left:1px solid var(--bt-line)}
 .bt-us-stat-label{overflow:hidden;font-size:12px;line-height:16px;color:var(--bt-ink-3);white-space:nowrap;text-overflow:ellipsis}
@@ -18189,7 +18284,11 @@ button.bt-us-row:hover{background:var(--bt-hover)}
 .bt-us-track>span{display:block;height:100%;border-radius:inherit;transform-origin:0 50%;animation:bt-us-fill .7s var(--bt-us-ease) backwards;animation-delay:calc(var(--i,0) * 35ms + 140ms);transition:width .45s var(--bt-us-ease)}
 .bt-us-row-num{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:52px;font-variant-numeric:tabular-nums}
 .bt-us-row-num b{font-size:13px;line-height:18px;font-weight:600}
-.bt-us-row-num small{font-size:11px;line-height:14px;color:var(--bt-ink-3)}
+.bt-us-row-num small{font-size:11px;line-height:14px;color:var(--bt-ink-3);white-space:nowrap}
+.bt-us-price-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:4px 18px 16px}
+.bt-us-price-row .bt-field{display:flex;flex-direction:column;gap:6px;flex:1 1 120px;min-width:0;font-size:12px;color:var(--bt-ink-2)}
+.bt-us-price-go{display:flex;gap:8px;margin-left:auto}
+.bt-us-price .bt-error{margin:0 18px 14px}
 .bt-us-split{height:1px;margin:6px 8px;background:var(--bt-line)}
 .bt-us-none{padding:18px 8px;font-size:12px;color:var(--bt-ink-3);text-align:center}
 .bt-us-glyph{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:var(--bt-hover);color:var(--bt-ink-2)}
