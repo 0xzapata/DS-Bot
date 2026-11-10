@@ -383,6 +383,10 @@ await step('a model price reaches the usage view', async () => {
 }, ({ key, after }) => expect(after.models.find(model => model.key === key)?.price?.output === 2, 'the price did not reach the view')
   ?? expect(after.models.filter(model => model.key !== key).every(model => model.price === undefined), 'an unpriced model got a price'))
 
+// Roles: the view lists Chief as a Main Bot and the rights of each role.
+await step('the roles view lists Chief as a Main Bot', () => api('roles'), view => expect(view.roles.find(role => role.role === 'main')?.bots.includes(chief().id), 'Chief is not listed as a Main Bot')
+  ?? expect(view.gated.some(item => item.tool === 'create_bot' && item.needed === 'main'), 'create_bot is not gated'))
+
 await step('update Writer', () => api('update-bot', { id: botNamed('Writer').id, role: 'Copywriter', instructions: 'Write the copy.' }), () => {
   const writer = botNamed('Writer')
   return expect(writer.role === 'Copywriter' && writer.instructions === 'Write the copy.', 'update not saved')

@@ -65,6 +65,8 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on llm/stream',
     'effect ds-bot: group log',
     'on approval/request (prepend)',
+    'effect ds-bot: role rights',
+    'tools guard',
     'on agent/inbox/discarded',
     'on session/event',
     'effect ds-bot: resume interrupted turns',

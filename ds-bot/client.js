@@ -750,6 +750,20 @@ var ZH = {
   Pinned: "已置顶",
   "Mark as Unread": "标为未读",
   "Rename Bot": "重命名 Bot",
+  "Create Bots (create_bot)": "创建 Bot（create_bot）",
+  "Stop another Bot's turn (stop_bot)": "停止其他 Bot 的回合（stop_bot）",
+  "Create and delete group chats (create_group, delete_group)": "创建和删除群聊（create_group、delete_group）",
+  "Change any group chat, its folder and section (update_group)": "修改任何群聊及其文件夹和分组（update_group）",
+  "Change another Bot, its memory and capabilities (update_bot)": "修改其他 Bot 及其记忆和能力（update_bot）",
+  "Post into any group chat and start a round (post_to_group)": "在任何群聊发言并发起一轮（post_to_group）",
+  "Change its own group chat: name, notice, members, reply mode (update_group)": "修改自己管理的群聊：名称、公告、成员、回复方式（update_group）",
+  "Start a round in its own group chat (post_to_group)": "在自己管理的群聊里发起一轮（post_to_group）",
+  "Message other Bots (message_bot)": "给其他 Bot 发消息（message_bot）",
+  "Change itself (update_bot)": "修改自己（update_bot）",
+  "Post into a group it is in; only named members answer (post_to_group)": "在所在群聊发言；只有被点名的成员回复（post_to_group）",
+  Roles: "角色",
+  Member: "成员",
+  "Held by": "担任者",
   "price not set": "未设置价格",
   Cost: "费用",
   Price: "价格",
@@ -2287,6 +2301,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     earlier: (sessionId, cursor) => call2("earlier", { sessionId, cursor: cursor ?? null }),
     // Hours come back in this browser's time zone, so days start at local midnight.
     usage: () => call2("usage", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+    roles: () => call2("roles"),
     // `summarize` starts a summary when the entries changed; `regenerate` always does.
     memoryView: (id, flags = {}) => call2("memory-view", { ...memoryOf(id), ...flags }),
     memoryAsk: (id, text) => call2("memory-ask", { ...memoryOf(id), text }),
@@ -21748,7 +21763,7 @@ function LocalAgentsPage({ run: run2, Section: Section2, Row: Row4 }) {
 var import_react47 = require("react");
 var import_dsh_client_ui_primitives2 = require("@deepseek-ai/dsh-client-ui-primitives");
 var capitalize2 = (word) => word[0].toUpperCase() + word.slice(1);
-var SETTINGS_PAGES = [["general", "General"], ["models", "Models"], ["local-agents", "Local agents"], ["bots", "Bots"], ["groups", "Group chats"], ["connectors", "Connectors"], ["im", "IM"], ["capabilities", "Capabilities"], ["browser", "Browser"], ["computer", "Computer use"], ["schedules", "Scheduled tasks"], ["usage", "Usage"], ["secrets", "Secrets"], ["feedback", "Feedback"], ["about", "About DS Bot"]];
+var SETTINGS_PAGES = [["general", "General"], ["models", "Models"], ["local-agents", "Local agents"], ["bots", "Bots"], ["groups", "Group chats"], ["roles", "Roles"], ["connectors", "Connectors"], ["im", "IM"], ["capabilities", "Capabilities"], ["browser", "Browser"], ["computer", "Computer use"], ["schedules", "Scheduled tasks"], ["usage", "Usage"], ["secrets", "Secrets"], ["feedback", "Feedback"], ["about", "About DS Bot"]];
 var LAST_PAGES = /* @__PURE__ */ new Set(["feedback", "about"]);
 var MERGED_SECTIONS = /* @__PURE__ */ new Set(["general", "models"]);
 var LOOK_ITEMS = ["appearance", "font-size"];
@@ -21756,7 +21771,7 @@ var DSH_ICONS = { account: import_dsh_client_ui_primitives2.IconUserOutlineMediu
 var dshPages = (dsh) => (dsh?.sections ?? []).filter((row) => row.id !== "" && !MERGED_SECTIONS.has(row.id));
 var hasSection = (dsh, id) => (dsh?.sections ?? []).some((row) => row.id === id);
 var dshItem = (dsh, id) => (0, import_react47.createElement)("div", { key: id, className: "bt-dsh-item", "data-item": id }, dsh.renderSlot("settings.general.item", {}, { only: id }));
-var PAGE_ICONS = { ...SETTINGS_ICONS, models: SlidersIcon, "local-agents": TerminalIcon, connectors: ConnectorIcon, im: ChatsIcon, capabilities: PlugIcon, browser: GlobeIcon, computer: MonitorIcon, schedules: ClockIcon, secrets: KeyIcon, feedback: FeedbackIcon, about: InfoIcon };
+var PAGE_ICONS = { ...SETTINGS_ICONS, roles: StarLineIcon, models: SlidersIcon, "local-agents": TerminalIcon, connectors: ConnectorIcon, im: ChatsIcon, capabilities: PlugIcon, browser: GlobeIcon, computer: MonitorIcon, schedules: ClockIcon, secrets: KeyIcon, feedback: FeedbackIcon, about: InfoIcon };
 var MEMORY_SIZES = [
   { scope: "group", label: "Group memory size", size: 12e3 },
   { scope: "bot", label: "Bot memory size", size: 8e3 },
@@ -21784,6 +21799,30 @@ function SetRow({ label, hint, children, className = "" }) {
     (0, import_react47.createElement)("div", { className: "bt-set-copy" }, (0, import_react47.createElement)("span", null, label), hint ? (0, import_react47.createElement)("span", { className: "bt-set-hint" }, hint) : null),
     children ? (0, import_react47.createElement)("div", { className: "bt-set-control" }, children) : null
   );
+}
+var ROLE_TITLES = { main: "Main Bot", admin: "Group admin", member: "Member" };
+function RolesPage({ roster, actions }) {
+  const [view, setView] = (0, import_react47.useState)(null);
+  const [error, setError] = (0, import_react47.useState)("");
+  (0, import_react47.useEffect)(() => {
+    let stopped = false;
+    actions.roles().then((value) => {
+      if (!stopped) setView(value);
+    }, (failure) => {
+      if (!stopped) setError(failure?.message ?? String(failure));
+    });
+    return () => {
+      stopped = true;
+    };
+  }, [roster]);
+  if (error) return (0, import_react47.createElement)("div", { className: "bt-error", role: "alert" }, error);
+  if (view === null) return null;
+  return view.roles.map(({ role, rights, bots }) => (0, import_react47.createElement)(
+    SetSection,
+    { key: role, title: t(ROLE_TITLES[role]) },
+    rights.map((line) => (0, import_react47.createElement)(SetRow, { key: line, label: t(line) })),
+    (0, import_react47.createElement)(SetRow, { label: t("Held by"), hint: bots.length === 0 ? t("No Bot") : bots.map((id) => roster.byId[id]?.name ?? id).join(", ") })
+  ));
 }
 var LAYOUTS = [["bubble", "Bubble"], ["flat", "Flat"]];
 function Choice({ label, value, options, pick: pick2 }) {
@@ -22207,6 +22246,7 @@ function SettingsDialog({ page, id, roster, actions, useUpdate, leaving = false,
             shown === "bots" && !bot ? (0, import_react47.createElement)(BotsPage, { roster, actions, run: run2 }) : null,
             room2 ? (0, import_react47.createElement)("div", { className: "bt-settings-form" }, (0, import_react47.createElement)(GroupSettingsForm, { key: room2.id, room: room2, roster, actions, run: run2 })) : null,
             shown === "groups" && !room2 ? (0, import_react47.createElement)(GroupsPage, { roster, actions, run: run2 }) : null,
+            shown === "roles" ? (0, import_react47.createElement)(RolesPage, { roster, actions }) : null,
             shown === "connectors" ? (0, import_react47.createElement)(ConnectorsPage, { roster, actions }) : null,
             shown === "im" ? (0, import_react47.createElement)(ImPage, { roster, actions }) : null,
             shown === "capabilities" ? (0, import_react47.createElement)(CapabilitiesPage, { roster, actions, run: run2 }) : null,

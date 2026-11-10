@@ -2,7 +2,7 @@ import { Component, createElement as h, useCallback, useEffect, useRef, useState
 import { ACCENT_INKS, INKS } from './inks.js'
 import { isMainOf } from './sources.js'
 import { MESSAGE_WIDTH, allThemes, flatWidthOf, layoutOf, thinkingShown, widthOf } from './themes.js'
-import { CloseIcon, ChevronLeftIcon, ChevronRightIcon, ChatsIcon, ClockIcon, ConnectorIcon, GlobeIcon, InfoIcon, MonitorIcon, PlugIcon, PlusIcon, SlidersIcon, TerminalIcon, SETTINGS_ICONS } from './icons.js'
+import { CloseIcon, ChevronLeftIcon, ChevronRightIcon, ChatsIcon, ClockIcon, ConnectorIcon, GlobeIcon, InfoIcon, MonitorIcon, PlugIcon, PlusIcon, SlidersIcon, StarLineIcon, TerminalIcon, SETTINGS_ICONS } from './icons.js'
 import { IconAgentPresetOutlineMedium, IconArchiveOutlineMedium, IconPersonalizationOutlineMedium, IconSettingsOutlineMedium, IconUserOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives'
 import { AdminStar, BotAvatar, RoomAvatar } from './mark.js'
 import { useEscape } from './overlay-hooks.js'
@@ -35,7 +35,7 @@ const capitalize = word => word[0].toUpperCase() + word.slice(1)
 // DS Bot's pages come first; below a rule, the pages DSH and other plugins register
 // (`settings.section`), then Feedback and About. DSH's General rows join General, and
 // its Models page opens from DS Bot's Models page as the advanced settings.
-const SETTINGS_PAGES = [['general', 'General'], ['models', 'Models'], ['local-agents', 'Local agents'], ['bots', 'Bots'], ['groups', 'Group chats'], ['connectors', 'Connectors'], ['im', 'IM'], ['capabilities', 'Capabilities'], ['browser', 'Browser'], ['computer', 'Computer use'], ['schedules', 'Scheduled tasks'], ['usage', 'Usage'], ['secrets', 'Secrets'], ['feedback', 'Feedback'], ['about', 'About DS Bot']]
+const SETTINGS_PAGES = [['general', 'General'], ['models', 'Models'], ['local-agents', 'Local agents'], ['bots', 'Bots'], ['groups', 'Group chats'], ['roles', 'Roles'], ['connectors', 'Connectors'], ['im', 'IM'], ['capabilities', 'Capabilities'], ['browser', 'Browser'], ['computer', 'Computer use'], ['schedules', 'Scheduled tasks'], ['usage', 'Usage'], ['secrets', 'Secrets'], ['feedback', 'Feedback'], ['about', 'About DS Bot']]
 const LAST_PAGES = new Set(['feedback', 'about'])
 // DSH sections DS Bot's own pages already hold.
 const MERGED_SECTIONS = new Set(['general', 'models'])
@@ -45,7 +45,7 @@ const DSH_ICONS = { account: IconUserOutlineMedium, 'agent-presets': IconAgentPr
 export const dshPages = dsh => (dsh?.sections ?? []).filter(row => row.id !== '' && !MERGED_SECTIONS.has(row.id))
 const hasSection = (dsh, id) => (dsh?.sections ?? []).some(row => row.id === id)
 const dshItem = (dsh, id) => h('div', { key: id, className: 'bt-dsh-item', 'data-item': id }, dsh.renderSlot('settings.general.item', {}, { only: id }))
-const PAGE_ICONS = { ...SETTINGS_ICONS, models: SlidersIcon, 'local-agents': TerminalIcon, connectors: ConnectorIcon, im: ChatsIcon, capabilities: PlugIcon, browser: GlobeIcon, computer: MonitorIcon, schedules: ClockIcon, secrets: KeyIcon, feedback: FeedbackIcon, about: InfoIcon }
+const PAGE_ICONS = { ...SETTINGS_ICONS, roles: StarLineIcon, models: SlidersIcon, 'local-agents': TerminalIcon, connectors: ConnectorIcon, im: ChatsIcon, capabilities: PlugIcon, browser: GlobeIcon, computer: MonitorIcon, schedules: ClockIcon, secrets: KeyIcon, feedback: FeedbackIcon, about: InfoIcon }
 
 // What each MEMORY.md holds by default, in characters of entry text.
 const MEMORY_SIZES = [
@@ -71,6 +71,23 @@ function SetRow({ label, hint, children, className = '' }) {
   return h('div', { className: `bt-set-row ${className}`.trim() },
     h('div', { className: 'bt-set-copy' }, h('span', null, label), hint ? h('span', { className: 'bt-set-hint' }, hint) : null),
     children ? h('div', { className: 'bt-set-control' }, children) : null)
+}
+
+// What each role may do, as the host enforces it, and which Bots hold it now.
+const ROLE_TITLES = { main: 'Main Bot', admin: 'Group admin', member: 'Member' }
+function RolesPage({ roster, actions }) {
+  const [view, setView] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let stopped = false
+    actions.roles().then(value => { if (!stopped) setView(value) }, failure => { if (!stopped) setError(failure?.message ?? String(failure)) })
+    return () => { stopped = true }
+  }, [roster])
+  if (error) return h('div', { className: 'bt-error', role: 'alert' }, error)
+  if (view === null) return null
+  return view.roles.map(({ role, rights, bots }) => h(SetSection, { key: role, title: t(ROLE_TITLES[role]) },
+    rights.map(line => h(SetRow, { key: line, label: t(line) })),
+    h(SetRow, { label: t('Held by'), hint: bots.length === 0 ? t('No Bot') : bots.map(id => roster.byId[id]?.name ?? id).join(', ') })))
 }
 
 const LAYOUTS = [['bubble', 'Bubble'], ['flat', 'Flat']]
@@ -370,6 +387,7 @@ export function SettingsDialog({ page, id, roster, actions, useUpdate, leaving =
           shown === 'bots' && !bot ? h(BotsPage, { roster, actions, run }) : null,
           room ? h('div', { className: 'bt-settings-form' }, h(GroupSettingsForm, { key: room.id, room, roster, actions, run })) : null,
           shown === 'groups' && !room ? h(GroupsPage, { roster, actions, run }) : null,
+          shown === 'roles' ? h(RolesPage, { roster, actions }) : null,
           shown === 'connectors' ? h(ConnectorsPage, { roster, actions }) : null,
           shown === 'im' ? h(ImPage, { roster, actions }) : null,
           shown === 'capabilities' ? h(CapabilitiesPage, { roster, actions, run }) : null,
