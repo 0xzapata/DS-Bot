@@ -59,7 +59,8 @@ export function stackReplies(replies) {
   const items = []
   replies.forEach((reply, index) => {
     const last = items.at(-1)
-    if (reply.kind === undefined && last?.reply.kind === undefined && last?.reply.botId === reply.botId) {
+    // A message called in by someone else starts its own block, so its routing shows.
+    if (reply.kind === undefined && last?.reply.kind === undefined && last?.reply.botId === reply.botId && last.reply.by === reply.by) {
       last.texts.push(reply.text)
       last.time = reply.time
       last.duration = reply.duration

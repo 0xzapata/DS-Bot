@@ -750,6 +750,7 @@ var ZH = {
   Pinned: "已置顶",
   "Mark as Unread": "标为未读",
   "Rename Bot": "重命名 Bot",
+  "via {name}": "经 {name}",
   "Create Bots (create_bot)": "创建 Bot（create_bot）",
   "Stop another Bot's turn (stop_bot)": "停止其他 Bot 的回合（stop_bot）",
   "Create and delete group chats (create_group, delete_group)": "创建和删除群聊（create_group、delete_group）",
@@ -3355,7 +3356,10 @@ body{--bt-msg-w:.8;--bt-flat-w:1}
 .bt-bubble :is(img,video),.bt-ububble :is(img,video),[data-chat-flow] [class*="_bubble"] :is(img,video){max-width:100%;height:auto}
 .bt-bubble a[href^="${MENTION_ORIGIN}"]{text-decoration:none;font-weight:400;cursor:pointer;white-space:nowrap}
 .bt-bubble a[href^="${MENTION_ORIGIN}"]::before{content:"";display:inline-block;width:16px;height:16px;margin-right:3px;vertical-align:-3px;background:currentColor;-webkit-mask:${DEFAULT_MASK} center/contain no-repeat;mask:${DEFAULT_MASK} center/contain no-repeat}
-.bt-group-msg{display:flex;flex-direction:column;gap:4px;margin:16px 0 0}
+.bt-group-msg{display:flex;flex-direction:column;gap:4px;margin:16px 0 0;min-width:0}
+.bt-group-replies{min-width:0;max-width:100%}
+.bt-group-name{min-width:0;overflow-wrap:anywhere}
+.bt-group-name:has(>.bt-lead){flex-wrap:wrap}
 .bt-group-msg:first-child{margin-top:0}
 .bt-group-msg[data-chain-prev]{margin-top:4px}
 .bt-group-msg[data-chain-prev]>.bt-group-name{display:none}
@@ -4153,7 +4157,7 @@ body[data-bt-layout=flat] .bt-think{max-width:calc(var(--bt-flat-w) * 100%)}
 .bt-think-text[data-fade=top]{mask-image:linear-gradient(to bottom,transparent,#000 18px)}
 .bt-think-text[data-fade=bottom]{mask-image:linear-gradient(to top,transparent,#000 18px)}
 .bt-think-text[data-fade=both]{mask-image:linear-gradient(to bottom,transparent,#000 18px,#000 calc(100% - 18px),transparent)}
-.bt-event{display:flex;justify-content:center;align-items:center;gap:2px;min-height:24px;margin:2px 0;font-size:12px;line-height:16px;color:var(--bt-ink-2);flex-wrap:wrap}
+.bt-event{display:flex;justify-content:center;align-items:center;gap:2px;min-height:24px;margin:2px 0;font-size:12px;line-height:16px;color:var(--bt-ink-2);flex-wrap:wrap;min-width:0;overflow-wrap:anywhere;text-align:center}
 .bt-event>span{padding:0 2px}
 .bt-event button:not(.bt-soft){border:0;background:none;color:inherit;font:inherit;display:inline-flex;align-items:center;gap:4px;cursor:pointer;height:24px;padding:4px 6px 4px 4px;border-radius:999px;box-sizing:border-box;transition:background-color .12s ease}
 .bt-event button:not(.bt-soft):hover{background:var(--bt-hover)}
@@ -13156,7 +13160,7 @@ function stackReplies(replies) {
   const items = [];
   replies.forEach((reply, index) => {
     const last = items.at(-1);
-    if (reply.kind === void 0 && last?.reply.kind === void 0 && last?.reply.botId === reply.botId) {
+    if (reply.kind === void 0 && last?.reply.kind === void 0 && last?.reply.botId === reply.botId && last.reply.by === reply.by) {
       last.texts.push(reply.text);
       last.time = reply.time;
       last.duration = reply.duration;
@@ -14197,7 +14201,7 @@ function scheduleGroupChains(flow) {
     if (flow.isConnected !== false) syncGroupChains(flow);
   });
 }
-function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, actions, msgKey, useUi, whole, time, duration }) {
+function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, actions, msgKey, useUi, whole, time, duration, by }) {
   const ref = (0, import_react32.useRef)(null);
   (0, import_react32.useLayoutEffect)(() => {
     const el = ref.current;
@@ -14223,6 +14227,8 @@ function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, 
       flat ? lead : null,
       bot.name,
       room2?.admin === bot.id ? (0, import_react32.createElement)("span", { className: "bt-group-role" }, t("Admin")) : null,
+      // Routing: who called this member in, apart from what it says.
+      by ? (0, import_react32.createElement)("span", { className: "bt-group-role bt-group-via" }, t("via {name}", { name: roster.byId[by]?.name ?? t("a Bot") })) : null,
       Number.isFinite(time) ? (0, import_react32.createElement)("span", { className: "bt-group-time", title: clockLabel(time) }, messageClock(time)) : null,
       took ? (0, import_react32.createElement)("span", { className: "bt-group-took", title: t("Ran for {duration}", { duration: took }) }, took) : null
     ),
@@ -14754,10 +14760,11 @@ function RelayEvent({ reply, bot, sessionId, actions }) {
   if (reply.kind === "approval" || reply.kind === "working") {
     return (0, import_react32.createElement)(
       "div",
-      { className: "bt-event" },
+      { className: "bt-event", "data-handoff": reply.kind === "working" ? "" : void 0 },
       (0, import_react32.createElement)(
         "button",
         { type: "button", className: "bt-event-whole", onClick: () => actions.showDetails(sessionId) },
+        reply.kind === "working" ? (0, import_react32.createElement)("span", { className: "bt-event-ico", "aria-hidden": true }, (0, import_react32.createElement)(MoveIcon)) : null,
         (0, import_react32.createElement)(BotMark, { bot, size: 16 }),
         (0, import_react32.createElement)("span", { className: "bt-event-name" }, t(reply.kind === "working" ? "{name} started on it" : "{name} paused for your approval", { name: bot.name }))
       )
@@ -14770,7 +14777,7 @@ function RelayEvent({ reply, bot, sessionId, actions }) {
     return (0, import_react32.createElement)("div", { className: "bt-event" }, t("You stopped {name}'s work", { name: bot.name }));
   }
   if (reply.kind === "done") {
-    return (0, import_react32.createElement)("div", { className: "bt-event" }, t("{name} finished its work", { name: bot.name }));
+    return (0, import_react32.createElement)("div", { className: "bt-event", "data-handoff": "" }, (0, import_react32.createElement)("span", { className: "bt-event-ico", "aria-hidden": true }, (0, import_react32.createElement)(MoveIcon)), t("{name} finished its work", { name: bot.name }));
   }
   return null;
 }
@@ -14838,7 +14845,7 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
           goalEventText(reply)
         );
       }
-      return (0, import_react32.createElement)(GroupMessage, { key: `${reply.botId}-${index}`, bot, texts: texts2, room: room2, roster, actions, msgKey: callId ? `${sessionId}:${callId}:${index}` : void 0, useUi, time, duration });
+      return (0, import_react32.createElement)(GroupMessage, { key: `${reply.botId}-${index}`, bot, texts: texts2, room: room2, roster, actions, msgKey: callId ? `${sessionId}:${callId}:${index}` : void 0, useUi, time, duration, by: reply.by });
     }),
     pending.map((id, at) => {
       const bot = roster.byId[id];
@@ -25755,12 +25762,12 @@ body[data-ds-dark-theme] .bt-member-state.bt-mw-ask{color:#f0b84a}
 .bt-member-stop:active:not(:disabled){scale:.94}
 .bt-member-stop:disabled{opacity:.5;cursor:default}
 .bt-member-cards{display:flex;flex-direction:column;gap:6px;padding:2px 8px 8px 50px}
-.bt-mw-card{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:12px;background:var(--bt-hover);font-size:12px;line-height:17px;color:var(--bt-ink-2);animation:bt-rise .2s ease-out backwards}
+.bt-mw-card{display:flex;flex-direction:column;gap:4px;min-width:0;max-width:100%;box-sizing:border-box;overflow-wrap:anywhere;padding:10px 12px;border-radius:12px;background:var(--bt-hover);font-size:12px;line-height:17px;color:var(--bt-ink-2);animation:bt-rise .2s ease-out backwards}
 .bt-mw-tool{font-weight:600;color:var(--bt-ink)}
 .bt-mw-text{color:var(--bt-ink);overflow-wrap:anywhere}
 .bt-mw-reason{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.bt-mw-code{display:block;padding:4px 8px;border-radius:6px;background:var(--bt-main);font:11px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--bt-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bt-mw-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:4px}
+.bt-mw-code{display:block;max-width:100%;box-sizing:border-box;padding:4px 8px;border-radius:6px;background:var(--bt-main);font:11px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--bt-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bt-mw-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin-top:4px}
 .bt-mw-actions>button{height:28px;padding:0 12px;font-size:12px}
 .bt-mw-actions>button:disabled{opacity:.5;cursor:default}
 @media (prefers-reduced-motion:reduce){.bt-mw-pill,.bt-mw-face,.bt-mw-label,.bt-member,.bt-mw-card{animation:none}.bt-mw-pill{transition:background-color .12s ease}}

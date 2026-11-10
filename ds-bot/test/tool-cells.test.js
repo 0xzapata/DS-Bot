@@ -205,6 +205,24 @@ test('a group whose admin passed alone shows the notice', () => {
   assert.deepEqual(events, ['Chief did not answer or call anyone; call a member with @Name'])
 })
 
+// A member the admin called in shows who routed it, apart from its reply; one the user
+// called shows no routing. A routed reply never merges with the same Bot's own block.
+test('a routed group reply names its caller, and a handoff is its own row', () => {
+  const replies = [
+    { botId: 'writer', text: 'Mine.', time: at(0, 14, 5) },
+    { botId: 'writer', text: 'Asked by Chief.', by: 'chief', time: at(0, 14, 6) },
+    { kind: 'working', botId: 'writer', name: 'Writer', time: at(0, 14, 7) },
+    { kind: 'done', botId: 'writer', name: 'Writer', time: at(0, 14, 8) },
+  ]
+  const out = show(call('group_relay', 'direct', { content: { replies } }), { sessionId: 'room' })
+  const groups = findAll(out, node => node.props?.className === 'bt-group-msg')
+  assert.equal(groups.length, 2)
+  const vias = findAll(out, node => node.props?.className === 'bt-group-role bt-group-via').map(text)
+  assert.deepEqual(vias, ['via Chief'])
+  const handoffs = findAll(out, node => node.props?.className === 'bt-event' && node.props['data-handoff'] === '')
+  assert.deepEqual(handoffs.map(text), ['Writer started on it', 'Writer finished its work'])
+})
+
 // The trigger of a post in a group chat carries the event's time, not the post's.
 test('a group post drawn from its trigger shows the time it came in', () => {
   const time = at(0, 16, 42)

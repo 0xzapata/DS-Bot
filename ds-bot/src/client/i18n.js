@@ -691,6 +691,7 @@ const ZH = {
   Pinned: '已置顶',
   'Mark as Unread': '标为未读',
   'Rename Bot': '重命名 Bot',
+  'via {name}': '经 {name}',
   'Create Bots (create_bot)': '创建 Bot（create_bot）',
   'Stop another Bot\'s turn (stop_bot)': '停止其他 Bot 的回合（stop_bot）',
   'Create and delete group chats (create_group, delete_group)': '创建和删除群聊（create_group、delete_group）',

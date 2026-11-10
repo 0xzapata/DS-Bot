@@ -492,10 +492,11 @@ export function install(rt) {
   }
 
   // A member's message in the round: in the log, for the members after it, and in the
-  // round's replies, for the user.
-  const postInRound = (room, round, member, text, duration) => {
+  // round's replies, for the user. `by` is the member that called it in, which the
+  // chat shows as routing apart from the reply.
+  const postInRound = (room, round, member, text, duration, by) => {
     appendRoom(room, { who: member.name, botId: member.id, text })
-    round.replies.push({ botId: member.id, name: member.name, color: member.color, text, time: Date.now(), ...(duration === undefined ? {} : { duration }) })
+    round.replies.push({ botId: member.id, name: member.name, color: member.color, text, time: Date.now(), ...(duration === undefined ? {} : { duration }), ...(by === undefined || by === member.id ? {} : { by }) })
     void rt.save().catch(() => {})
   }
 
@@ -540,7 +541,7 @@ export function install(rt) {
         const step = stripOwnName(member.name, raw)
         if (isPass(step)) return
         said.push(step)
-        postInRound(room, round, member, step, Date.now() - startedAt)
+        postInRound(room, round, member, step, Date.now() - startedAt, by)
         heard(step)
       }
       touch()
@@ -907,7 +908,7 @@ export function install(rt) {
       round.replies.push({ kind: 'working', botId: member.id, name: member.name, color: member.color, time: Date.now() })
     } else if (subRunning) {
       if (final !== undefined) {
-        postInRound(room, round, member, final, Date.now() - startedAt)
+        postInRound(room, round, member, final, Date.now() - startedAt, slot.by)
         callFrom(room, round, member, final, called, { worked: true, byBot: answeredBot })
       }
       slot.status = 'working'
@@ -916,7 +917,7 @@ export function install(rt) {
     } else if (final !== undefined || (typeof reply === 'string' && said.length > 0)) {
       slot.status = 'posted'
       if (final !== undefined) {
-        postInRound(room, round, member, final, Date.now() - startedAt)
+        postInRound(room, round, member, final, Date.now() - startedAt, slot.by)
         callFrom(room, round, member, final, called, { worked, byBot: answeredBot })
       }
     } else {
