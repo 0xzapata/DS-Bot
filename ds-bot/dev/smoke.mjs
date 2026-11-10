@@ -360,6 +360,18 @@ await step('Writer waits for the work it handed on, then answers with it', async
   ?? expect(saidText(calls, /^Coder 交回了，我把结果交给 Chief/), 'Writer did not go on when Coder answered')
   ?? expect(state().exchanges.some(entry => entry.role === 'reply' && entry.from === botNamed('Writer').id && entry.text.includes('[Handed back to Writer for this work]')), 'Chief did not get Coder\'s result with Writer\'s answer'))
 
+// #122: "/new" gives Writer a fresh Session with an empty context; its settings and
+// the earlier chat stay, and a send to the closed chat is refused.
+const writerBefore = botNamed('Writer')
+await step('Writer starts a new session', () => api('bot-new-session', { botId: writerBefore.id, expected: writerBefore.sessionId }), (value, calls) => {
+  const writer = botNamed('Writer')
+  return expect(value?.sessionId === writer.sessionId && value.sessionId !== writerBefore.sessionId, `the chat did not move (${JSON.stringify(value)})`)
+    ?? expect(writer.segments?.at(-1)?.sessionId === writerBefore.sessionId && writer.segments.at(-1).closed === true, 'the old chat is not kept as a closed part')
+    ?? expect(writer.model === writerBefore.model && writer.instructions === writerBefore.instructions && writer.workDir === writerBefore.workDir, 'Writer settings changed')
+    ?? expect(calls.length === 0, `a new session made ${calls.length} model calls`)
+})
+await step('the closed chat takes no input', () => api('send', { sessionId: writerBefore.sessionId, text: 'still there?' }).then(() => 'sent', error => error.message), value => expect(value !== 'sent', 'a send to the closed chat went through'))
+
 await step('update Writer', () => api('update-bot', { id: botNamed('Writer').id, role: 'Copywriter', instructions: 'Write the copy.' }), () => {
   const writer = botNamed('Writer')
   return expect(writer.role === 'Copywriter' && writer.instructions === 'Write the copy.', 'update not saved')

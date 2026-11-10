@@ -750,6 +750,8 @@ var ZH = {
   Pinned: "已置顶",
   "Mark as Unread": "标为未读",
   "Rename Bot": "重命名 Bot",
+  "Start a new session with {name}? The current chat stays in history, and nothing from it is carried over.": "和 {name} 开一个新会话？当前对话留在历史里，内容不会带过去。",
+  "Start a new session with this Bot": "和这个 Bot 开一个新会话",
   "Group settings": "群设置",
   "Rename group": "重命名群聊",
   "Copy conversation ID": "复制对话 ID",
@@ -1596,6 +1598,13 @@ var HOST_ERRORS = [
   [/^Memory cannot change now: [\s\S]*$/, "现在不能修改记忆：另一个 dsh 正在使用这个 Bot 团队"]
 ];
 var HOST_ZH = {
+  "The chat moved on since you looked; open it again": "对话已经变了，请重新打开",
+  "The Bot has queued messages; let it read them first": "Bot 还有排队的消息，请等它先读完",
+  "The Bot is waiting for your answer; answer or dismiss it first": "Bot 在等你回答，请先回答或关掉",
+  "The new session could not be started; try again": "新会话没能开始，请再试一次",
+  "That session was closed by a new session; it stays readable only": "这个会话已被新会话关闭，只能查看",
+  "That session was closed by a new session; send to the Bot's current chat": "这个会话已被新会话关闭，请发到 Bot 当前的对话",
+  "A new session starts only in a Bot's own chat": "新会话只能在 Bot 自己的对话里开始",
   "Request failed": "请求失败",
   "Permissions are not available in this DeepSeek Harness": "这个 DeepSeek Harness 不支持权限设置",
   "Avatar images must be PNG, JPEG, WebP, or GIF": "头像图片必须是 PNG、JPEG、WebP 或 GIF",
@@ -2189,6 +2198,8 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     setMain: (id, main = true, options = {}) => after(call2("set-main", { id, main, ...options })),
     updateRoom: (id, patch) => after(call2("update-room", { id, ...patch })),
     send: (sessionId, text) => after(call2("send", { sessionId: partFor(sessionId), text })),
+    // A fresh, empty session in a Bot's own chat; `expected` is the part the user saw.
+    newSession: (botId, expected2) => after(call2("bot-new-session", { botId, ...expected2 === void 0 ? {} : { expected: expected2 } })),
     answerQuestion: (sessionId, questionId, answer) => after(call2("answer-question", { sessionId: partFor(sessionId), questionId, answer })),
     dismissQuestion: (sessionId) => after(call2("dismiss-question", { sessionId })),
     answerView: (sessionId, viewId, action, values) => after(call2("view-reply", { sessionId: partFor(sessionId), viewId, action, values })),
@@ -25098,12 +25109,13 @@ function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
     };
   }, []);
   const [place, setPlace] = (0, import_react57.useState)({ left: menu.x, top: menu.y });
+  const [confirming, setConfirming] = (0, import_react57.useState)(false);
   const tick = useViewport();
   (0, import_react57.useLayoutEffect)(() => {
     const box = ref.current?.getBoundingClientRect();
     if (!box) return;
     setPlace({ left: Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8)), top: Math.max(8, Math.min(menu.y, viewBottom() - box.height - 8)) });
-  }, [menu.x, menu.y, tick]);
+  }, [menu.x, menu.y, tick, confirming]);
   if (menu.kind === "agent" || menu.kind === "agent-session") return (0, import_react57.createElement)(AgentMenu, { menu, roster, actions, leaving });
   if (menu.kind === "section" || menu.kind === "section-add") return (0, import_react57.createElement)(SectionMenu, { menu, roster, actions, leaving });
   const bot = roster.byId[menu.id];
@@ -25122,6 +25134,7 @@ function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
     ],
     isTile ? [] : sectionMoveItems(entry, roster, actions),
     [
+      bot ? [t("New session"), PlusIcon, () => setConfirming(true), false, false, true] : null,
       bot ? [t("Rename Bot"), PencilIcon, () => actions.renameBot(bot.id)] : null,
       bot ? [t("Edit Bot"), GearIcon, () => actions.openSettings("bots", bot.id)] : null,
       room2 ? [t("Group settings"), GearIcon, () => actions.openSettings("groups", room2.id)] : null,
@@ -25140,20 +25153,34 @@ function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
       isMainBot ? null : [room2 ? t("Delete group") : t("Delete"), TrashIcon, () => bot ? actions.deleteBot(bot.id) : actions.deleteRoom(menu.id), true]
     ]
   ].map((group) => group.filter(Boolean)).filter((group) => group.length > 0);
+  const startOver = () => {
+    actions.closeMenu();
+    void actions.newSession(bot.id, currentPart(bot)).then(() => actions.openSession(bot.id)).catch((error) => actions.reportError(error, "menu"));
+  };
   return (0, import_react57.createElement)(
     "div",
     { ref, className: "bt-menu", role: "menu", "aria-label": t("{name} actions", { name: bot?.name ?? room2.name }), style: place, "data-leaving": leaving || void 0 },
-    groups.map((group, index) => (0, import_react57.createElement)(
+    confirming && bot ? (0, import_react57.createElement)(
+      "div",
+      { className: "bt-confirm", role: "alertdialog", "aria-label": t("New session") },
+      (0, import_react57.createElement)("p", { className: "bt-confirm-text" }, t("Start a new session with {name}? The current chat stays in history, and nothing from it is carried over.", { name: bot.name })),
+      (0, import_react57.createElement)(
+        "div",
+        { className: "bt-confirm-row" },
+        (0, import_react57.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => setConfirming(false) }, t("Cancel")),
+        (0, import_react57.createElement)("button", { type: "button", className: "bt-confirm-go", autoFocus: true, onClick: startOver }, t("New session"))
+      )
+    ) : groups.map((group, index) => (0, import_react57.createElement)(
       import_react57.Fragment,
       { key: index },
       index > 0 ? (0, import_react57.createElement)("div", { className: "bt-menu-sep", role: "separator" }) : null,
-      group.map(([label, Icon, run2, danger, checked]) => (0, import_react57.createElement)("button", {
+      group.map(([label, Icon, run2, danger, checked, stay]) => (0, import_react57.createElement)("button", {
         key: label,
         type: "button",
         role: "menuitem",
         className: danger ? "bt-danger" : void 0,
         onClick: () => {
-          actions.closeMenu();
+          if (stay !== true) actions.closeMenu();
           void Promise.resolve(run2()).catch((error) => actions.reportError(error, "menu"));
         }
       }, (0, import_react57.createElement)(Icon), (0, import_react57.createElement)("span", { className: "bt-menu-label" }, label), checked ? (0, import_react57.createElement)("span", { className: "bt-menu-check" }, (0, import_react57.createElement)(CheckIcon)) : null))
@@ -29662,6 +29689,30 @@ function apply(ctx) {
     });
     return () => fiber.dispose();
   };
+  const ownBotOf = (sessionId) => {
+    const snapshot = roster.getSnapshot();
+    return Object.values(snapshot.byId ?? {}).find((bot) => currentPart(bot) === sessionId);
+  };
+  const installNewCommand = () => {
+    const fiber = ctx.inject(["commandUi"], (scope) => {
+      scope.effect(() => scope.commandUi.register({
+        name: "new",
+        label: () => t("New session"),
+        description: () => t("Start a new session with this Bot"),
+        icon: PlusIcon,
+        available: (session) => ownBotOf(session.sessionId) !== void 0,
+        ui: {
+          kind: "action",
+          run: (session) => {
+            const bot = ownBotOf(session.sessionId);
+            if (bot === void 0) return;
+            void actions.newSession(bot.id, session.sessionId).then(() => actions.openSession(bot.id)).catch((error) => actions.reportError(error, "new-session"));
+          }
+        }
+      }), "ds-bot: /new command");
+    });
+    return () => fiber.dispose();
+  };
   actions.canReferenceChat = () => atMenu !== null;
   actions.referenceChat = (sessionId, span) => {
     const controller = atMenu?.controllerOf(sessionId);
@@ -29752,6 +29803,7 @@ function apply(ctx) {
     () => installCompiledStyles(QUEUE_CSS, "queue"),
     () => installMentions(),
     () => installAtMenu(),
+    () => installNewCommand(),
     installHeader,
     () => shadow("conversation.chat.node", { key: "assistant-step", priority: BOT_PRIORITY, locale: "chat", inject: assistantFace }, AssistantCell),
     () => shadow("conversation.chat.node", { key: "turn-trigger", priority: BOT_PRIORITY, locale: "chat", inject: face }, TriggerCell),

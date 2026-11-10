@@ -731,6 +731,7 @@ export function install(rt) {
   // The note a part opened with, as the fresh part shows it. A note DS Bot put
   // together without the model carries the last note the model wrote.
   function noteText(segment) {
+    if (segment?.fallback === 'clean') return '(No note: the user started a new session here, so nothing from this part was carried over.)'
     if (segment?.fallback === undefined) return segment?.note
     if (segment.fallback === 'whole') {
       const head = '(No new note: every message of the part was carried over word for word.'
@@ -953,12 +954,13 @@ export function install(rt) {
   // `cutoff`: the part kept being cut off at the output limit, so it moves on without
   // asking the model for a note at the same size.
   // `engine`: because the Bot now runs on something else (see engineMoved).
-  function startSwitch(agent, { resume = false, carry = [], info, joined, overflow = false, failed, bare = false, folder = false, manual = false, cutoff = false, engine = false, hard = overflow || folder || manual || engine || cutoff } = {}) {
+  function startSwitch(agent, { resume = false, carry = [], info, joined, overflow = false, failed, bare = false, folder = false, manual = false, clean = false, cutoff = false, engine = false, hard = overflow || folder || manual || clean || engine || cutoff } = {}) {
     const place = placeOf(agent.id)
-    if (place === undefined || switches.has(agent.id) || readOnly()) return
-    const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, hard, manual, cutoff, since: Date.now() }
+    if (place === undefined || switches.has(agent.id) || readOnly()) return undefined
+    const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, hard, manual, clean, cutoff, since: Date.now() }
     switches.set(agent.id, job)
-    void runSwitch(agent, job)
+    // Settles with the job once the switch is over, moved or not; never rejects.
+    return runSwitch(agent, job)
       .catch(error => {
         const name = rt.botOf(job.botId)?.name ?? rt.roomOf(job.roomId)?.name ?? agent.id
         if (unloaded(error)) return noteInfo('ds-bot: plugin unloaded while %s switched parts; input kept in part %s', name, agent.id)
@@ -1008,6 +1010,7 @@ export function install(rt) {
       // A state write that fails here (full disk, a file another program holds, a lost lock)
       // must not end up as an unhandled rejection, which stops the whole host.
       .catch(error => rt.warn('ds-bot: the switch of %s did not finish: %s', agent.id, error))
+      .then(() => job)
   }
 
   async function runSwitch(agent, job) {
@@ -1109,7 +1112,7 @@ export function install(rt) {
     const parts = bot === undefined ? partsOf(undefined, room.id) : partsOf(bot.id, room?.id)
     const number = parts.length
     const budget = Math.min(RECENT_TOKENS, Math.floor((lines?.check ?? 4 * RECENT_TOKENS) / 4))
-    const readLines = () => (job.bare ? { recent: [], earlier: [], unlisted: 0, complete: true } : handoffLines(agent.id, { budget, group: room !== undefined, number }))
+    const readLines = () => (job.bare || job.clean ? { recent: [], earlier: [], unlisted: 0, complete: true } : handoffLines(agent.id, { budget, group: room !== undefined, number }))
     let carried = job.folder ? await readLines() : undefined
     // A short part with no tool work goes over word for word, so it needs no note.
     const whole = carried?.whole === true && !session.deriveMessages().some(message => message.role === 'tool')
@@ -1119,7 +1122,7 @@ export function install(rt) {
     // for its handoff; the part moves on with the deterministic package.
     const local = bot !== undefined && rt.isLocalAgentRef?.(bot.model ?? bot.appliedModel) === true
     // The group's own Session only relays; it has no route a note could be written with.
-    if (!local && !job.engine && !job.overflow && job.cutoff !== true && job.failed === undefined && !whole && bot !== undefined) {
+    if (!job.clean && !local && !job.engine && !job.overflow && job.cutoff !== true && job.failed === undefined && !whole && bot !== undefined) {
       try {
         written = await writeNote(agent, AbortSignal.any([signal, AbortSignal.timeout(NOTE_TIMEOUT_MS)]), { folder: job.folder })
       } catch (error) {
@@ -1140,7 +1143,8 @@ export function install(rt) {
     if (failure !== undefined) rt.warn('ds-bot: handoff note for %s failed past the hard line; moving on with the earlier note: %s', name, failure)
     const previous = parts.at(-2)
     const earlierNote = previous?.note ? { note: previous.note, noteFrom: previous.noteFrom ?? previous.number } : {}
-    const noted = written !== undefined ? { note: written.note }
+    const noted = job.clean ? { fallback: 'clean' }
+      : written !== undefined ? { note: written.note }
       : job.engine ? { fallback: 'engine', ...earlierNote }
       : local ? {}
       : { fallback: whole ? 'whole' : job.failed !== undefined ? 'failure' : job.overflow ? 'overflow' : job.cutoff === true ? 'cutoff' : 'failed', ...earlierNote }
@@ -1173,6 +1177,8 @@ export function install(rt) {
       room.sessions[bot.id] = freshId
     } else {
       ;(bot.segments ??= []).push(segment)
+      // A clean start closes every part before it: still readable, never written to again.
+      if (job.clean) for (const earlier of bot.segments) earlier.closed = true
       bot.sessionId = freshId
       // The card's call stays in the old part, so the fresh part shows it in the
       // composer dock, which takes a card without a call.
@@ -1212,10 +1218,13 @@ export function install(rt) {
         rt.warn('ds-bot: the fresh part of %s did not start in %s; it works in %s', name, intended, cwd)
       }
       const engine = job.engine ? rt.engineNameOf?.(bot.model ?? bot.appliedModel) : undefined
-      const text = handoffPackage({ room, self: bot === undefined, segment, lines: carried, number: number + 1, resume, overflow: job.overflow, cutoff: job.cutoff === true, failed: job.failed, bare: job.bare, folder, manual: job.manual, engine })
-      freshParts.set(freshId, estimateTokens(text))
-      fresh.followup(createUserMessage({ content: [{ type: 'text', text }], source: handoffSource(job, resume) }))
-      await ctx.sessions.flush(fresh.session)
+      // A clean start injects nothing: the fresh part opens with an empty context.
+      const text = job.clean ? undefined : handoffPackage({ room, self: bot === undefined, segment, lines: carried, number: number + 1, resume, overflow: job.overflow, cutoff: job.cutoff === true, failed: job.failed, bare: job.bare, folder, manual: job.manual, engine })
+      if (text !== undefined) {
+        freshParts.set(freshId, estimateTokens(text))
+        fresh.followup(createUserMessage({ content: [{ type: 'text', text }], source: handoffSource(job, resume) }))
+        await ctx.sessions.flush(fresh.session)
+      }
       carry.push(...job.carry.splice(0))
       await forward(job, [...carry, ...held])
     } catch (error) {
@@ -1710,6 +1719,34 @@ export function install(rt) {
     return true
   }
 
+  const refuse = (message, code) => { throw Object.assign(new Error(message), { code }) }
+
+  // "/new" in a Bot's own chat (#122): a fresh root Session with an empty context. The
+  // Bot keeps its settings, memory and folder; earlier parts stay readable but closed.
+  // `expected`, when given, is the part the caller saw as current.
+  async function newSession(botId, expected) {
+    await rt.load()
+    const bot = rt.botOf(botId)
+    if (bot === undefined) refuse('Unknown Bot', 'bot/not-found')
+    const sessionId = rt.chatOf(bot.id)
+    if (expected !== undefined && expected !== sessionId) refuse('The chat moved on since you looked; open it again', 'bot/stale')
+    const agent = await rt.resolveAgent(sessionId)
+    // Nothing waiting may be dropped: a clean start carries nothing over.
+    if (agent.status !== 'idle' || rt.live.get(sessionId)?.turn !== undefined || switches.has(sessionId)) refuse('The Bot is working; wait for it to finish or stop it first', 'bot/busy')
+    if (agent.inbox.nextStep.length > 0 || agent.inbox.nextTurn.length > 0) refuse('The Bot has queued messages; let it read them first', 'bot/busy')
+    if (state.questions[sessionId] !== undefined || state.views?.[sessionId] !== undefined || rt.waitsForApproval?.(sessionId) === true) refuse('The Bot is waiting for your answer; answer or dismiss it first', 'bot/busy')
+    const job = await startSwitch(agent, { clean: true })
+    if (job?.moved !== true) refuse('The new session could not be started; try again', 'bot/refused')
+    return { sessionId: rt.chatOf(bot.id), previous: sessionId }
+  }
+
+  // A part closed by a clean start takes no new input.
+  function closedPart(sessionId) {
+    const past = rt.pastOwners.get(sessionId)
+    if (past === undefined || past.roomId !== undefined) return false
+    return rt.botOf(past.botId)?.segments?.some(segment => segment.sessionId === sessionId && segment.closed === true) === true
+  }
+
   // The active chat's dock is authoritative, including when it has no closed view.
   function moveClosedView(from, to) {
     const closed = state.closedViews ??= {}
@@ -1729,6 +1766,7 @@ export function install(rt) {
     const segments = bot.segments ?? []
     const at = segments.findIndex(segment => segment.sessionId === partId)
     if (at === -1) throw Object.assign(new Error('Unknown part'), { code: 'bot/not-found' })
+    if (segments[at].closed === true) refuse('That session was closed by a new session; it stays readable only', 'bot/closed')
     const live = rt.live.get(current)
     if (live?.turn !== undefined) throw Object.assign(new Error('The Bot is working; wait for it to finish or stop it first'), { code: 'bot/busy' })
     // DSH turns away every step of an archived Session and every task aimed at it, so
@@ -1761,5 +1799,5 @@ export function install(rt) {
     return true
   }
 
-  Object.assign(rt, { clock, partsOf, historyEntry, partLines, noteText, earlierPage, chatPage, displayItems, followFolder, followEngine, heldBack, newPart, switchPart, sessionTokens: session => tokensOf(session), switchJobs: () => switches.values() })
+  Object.assign(rt, { clock, partsOf, historyEntry, partLines, noteText, earlierPage, chatPage, displayItems, followFolder, followEngine, heldBack, newPart, newSession, closedPart, switchPart, sessionTokens: session => tokensOf(session), switchJobs: () => switches.values() })
 }

@@ -40,12 +40,14 @@ export function ContextMenu({ menu, roster, actions, useWork, leaving = false })
     return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true) }
   }, [])
   const [place, setPlace] = useState({ left: menu.x, top: menu.y })
+  // "New session" asks once inside the menu before it starts over.
+  const [confirming, setConfirming] = useState(false)
   const tick = useViewport()
   useLayoutEffect(() => {
     const box = ref.current?.getBoundingClientRect()
     if (!box) return
     setPlace({ left: Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8)), top: Math.max(8, Math.min(menu.y, viewBottom() - box.height - 8)) })
-  }, [menu.x, menu.y, tick])
+  }, [menu.x, menu.y, tick, confirming])
   if (menu.kind === 'agent' || menu.kind === 'agent-session') return h(AgentMenu, { menu, roster, actions, leaving })
   if (menu.kind === 'section' || menu.kind === 'section-add') return h(SectionMenu, { menu, roster, actions, leaving })
   const bot = roster.byId[menu.id]
@@ -65,6 +67,7 @@ export function ContextMenu({ menu, roster, actions, useWork, leaving = false })
     ],
     isTile ? [] : sectionMoveItems(entry, roster, actions),
     [
+      bot ? [t('New session'), PlusIcon, () => setConfirming(true), false, false, true] : null,
       bot ? [t('Rename Bot'), PencilIcon, () => actions.renameBot(bot.id)] : null,
       bot ? [t('Edit Bot'), GearIcon, () => actions.openSettings('bots', bot.id)] : null,
       room ? [t('Group settings'), GearIcon, () => actions.openSettings('groups', room.id)] : null,
@@ -80,12 +83,21 @@ export function ContextMenu({ menu, roster, actions, useWork, leaving = false })
       isMainBot ? null : [room ? t('Delete group') : t('Delete'), TrashIcon, () => (bot ? actions.deleteBot(bot.id) : actions.deleteRoom(menu.id)), true],
     ],
   ].map(group => group.filter(Boolean)).filter(group => group.length > 0)
+  const startOver = () => {
+    actions.closeMenu()
+    void actions.newSession(bot.id, currentPart(bot)).then(() => actions.openSession(bot.id)).catch(error => actions.reportError(error, 'menu'))
+  }
   return h('div', { ref, className: 'bt-menu', role: 'menu', 'aria-label': t('{name} actions', { name: bot?.name ?? room.name }), style: place, 'data-leaving': leaving || undefined },
-    groups.map((group, index) => h(Fragment, { key: index },
+    confirming && bot ? h('div', { className: 'bt-confirm', role: 'alertdialog', 'aria-label': t('New session') },
+      h('p', { className: 'bt-confirm-text' }, t('Start a new session with {name}? The current chat stays in history, and nothing from it is carried over.', { name: bot.name })),
+      h('div', { className: 'bt-confirm-row' },
+        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => setConfirming(false) }, t('Cancel')),
+        h('button', { type: 'button', className: 'bt-confirm-go', autoFocus: true, onClick: startOver }, t('New session'))))
+    : groups.map((group, index) => h(Fragment, { key: index },
       index > 0 ? h('div', { className: 'bt-menu-sep', role: 'separator' }) : null,
-      group.map(([label, Icon, run, danger, checked]) => h('button', {
+      group.map(([label, Icon, run, danger, checked, stay]) => h('button', {
         key: label, type: 'button', role: 'menuitem', className: danger ? 'bt-danger' : undefined,
-        onClick: () => { actions.closeMenu(); void Promise.resolve(run()).catch(error => actions.reportError(error, 'menu')) },
+        onClick: () => { if (stay !== true) actions.closeMenu(); void Promise.resolve(run()).catch(error => actions.reportError(error, 'menu')) },
       }, h(Icon), h('span', { className: 'bt-menu-label' }, label), checked ? h('span', { className: 'bt-menu-check' }, h(CheckIcon)) : null)))))
 }
 

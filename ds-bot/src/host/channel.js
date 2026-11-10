@@ -540,6 +540,14 @@ export function install(rt) {
           const text = String(body.text ?? '').trim()
           if (text === '' || typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')
           await rt.load()
+          // `newSession: true` starts a fresh session in the Bot's own chat first.
+          if (body.newSession === true) {
+            const botId = rt.botOf(body.sessionId) ? body.sessionId : rt.chatOwners.get(body.sessionId)
+            if (botId === undefined) return fail('A new session starts only in a Bot\'s own chat', 'bot/invalid')
+            const { sessionId } = await rt.newSession(botId)
+            await rt.sendUser({ sessionId, content: [{ type: 'text', text }] })
+            return ok({ sessionId })
+          }
           await rt.sendUser({ sessionId: body.sessionId, content: [{ type: 'text', text }] })
           return ok(true)
         }
@@ -676,6 +684,12 @@ export function install(rt) {
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
           return ok(await rt.newPart(rt.chatOf(bot.id)))
         }
+        case 'bot-new-session': {
+          await rt.load()
+          const bot = rt.botOf(String(body.botId ?? ''))
+          if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          return ok(await rt.newSession(bot.id, typeof body.expected === 'string' ? body.expected : undefined))
+        }
         case 'bot-open-part': {
           await rt.load()
           const bot = rt.botOf(String(body.botId ?? ''))
@@ -709,6 +723,7 @@ export function install(rt) {
   // part of either resolves to its current part. `content` is the prompt blocks DSH
   // takes (text, image, file receipts); `requestId` lands on the message's source.
   async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
+    if (rt.closedPart?.(ref) === true) throw Object.assign(new Error('That session was closed by a new session; send to the Bot\'s current chat'), { code: 'bot/closed' })
     const past = rt.pastOwners.get(ref)
     const room = rt.roomOf(ref)
     const sessionId = rt.botOf(ref) ? rt.chatOf(ref)

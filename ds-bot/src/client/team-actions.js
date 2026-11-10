@@ -126,6 +126,8 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     setMain: (id, main = true, options = {}) => after(call('set-main', { id, main, ...options })),
     updateRoom: (id, patch) => after(call('update-room', { id, ...patch })),
     send: (sessionId, text) => after(call('send', { sessionId: partFor(sessionId), text })),
+    // A fresh, empty session in a Bot's own chat; `expected` is the part the user saw.
+    newSession: (botId, expected) => after(call('bot-new-session', { botId, ...(expected === undefined ? {} : { expected }) })),
     answerQuestion: (sessionId, questionId, answer) => after(call('answer-question', { sessionId: partFor(sessionId), questionId, answer })),
     dismissQuestion: sessionId => after(call('dismiss-question', { sessionId })),
     answerView: (sessionId, viewId, action, values) => after(call('view-reply', { sessionId: partFor(sessionId), viewId, action, values })),

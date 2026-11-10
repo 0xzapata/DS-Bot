@@ -691,6 +691,8 @@ const ZH = {
   Pinned: '已置顶',
   'Mark as Unread': '标为未读',
   'Rename Bot': '重命名 Bot',
+  'Start a new session with {name}? The current chat stays in history, and nothing from it is carried over.': '和 {name} 开一个新会话？当前对话留在历史里，内容不会带过去。',
+  'Start a new session with this Bot': '和这个 Bot 开一个新会话',
   'Group settings': '群设置',
   'Rename group': '重命名群聊',
   'Copy conversation ID': '复制对话 ID',
@@ -1553,6 +1555,13 @@ const HOST_ERRORS = [
   [/^Memory cannot change now: [\s\S]*$/, '现在不能修改记忆：另一个 dsh 正在使用这个 Bot 团队'],
 ]
 const HOST_ZH = {
+  'The chat moved on since you looked; open it again': '对话已经变了，请重新打开',
+  'The Bot has queued messages; let it read them first': 'Bot 还有排队的消息，请等它先读完',
+  'The Bot is waiting for your answer; answer or dismiss it first': 'Bot 在等你回答，请先回答或关掉',
+  'The new session could not be started; try again': '新会话没能开始，请再试一次',
+  'That session was closed by a new session; it stays readable only': '这个会话已被新会话关闭，只能查看',
+  'That session was closed by a new session; send to the Bot\'s current chat': '这个会话已被新会话关闭，请发到 Bot 当前的对话',
+  'A new session starts only in a Bot\'s own chat': '新会话只能在 Bot 自己的对话里开始',
   'Request failed': '请求失败',
   'Permissions are not available in this DeepSeek Harness': '这个 DeepSeek Harness 不支持权限设置',
   'Avatar images must be PNG, JPEG, WebP, or GIF': '头像图片必须是 PNG、JPEG、WebP 或 GIF',

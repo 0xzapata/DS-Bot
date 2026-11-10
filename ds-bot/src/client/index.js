@@ -56,6 +56,7 @@ import { USER_MESSAGE_CSS, UserMessageCell, canDrawUserMessages } from './user-m
 import { QueueDock, QUEUE_CSS } from './queue-dock.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
+import { PlusIcon } from './icons.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
 
@@ -989,6 +990,32 @@ export function apply(ctx) {
     })
     return () => fiber.dispose()
   }
+  // "/new" in a Bot's own chat: a fresh, empty session (#122). Only the Bot's current
+  // part offers it; a group chat or a DSH Agent Session does not.
+  const ownBotOf = (sessionId) => {
+    const snapshot = roster.getSnapshot()
+    return Object.values(snapshot.byId ?? {}).find(bot => currentPart(bot) === sessionId)
+  }
+  const installNewCommand = () => {
+    const fiber = ctx.inject(['commandUi'], (scope) => {
+      scope.effect(() => scope.commandUi.register({
+        name: 'new',
+        label: () => t('New session'),
+        description: () => t('Start a new session with this Bot'),
+        icon: PlusIcon,
+        available: session => ownBotOf(session.sessionId) !== undefined,
+        ui: {
+          kind: 'action',
+          run: (session) => {
+            const bot = ownBotOf(session.sessionId)
+            if (bot === undefined) return
+            void actions.newSession(bot.id, session.sessionId).then(() => actions.openSession(bot.id)).catch(error => actions.reportError(error, 'new-session'))
+          },
+        },
+      }), 'ds-bot: /new command')
+    })
+    return () => fiber.dispose()
+  }
   actions.canReferenceChat = () => atMenu !== null
   actions.referenceChat = (sessionId, span) => {
     const controller = atMenu?.controllerOf(sessionId)
@@ -1084,6 +1111,7 @@ export function apply(ctx) {
     () => installCompiledStyles(QUEUE_CSS, 'queue'),
     () => installMentions(),
     () => installAtMenu(),
+    () => installNewCommand(),
     installHeader,
     () => shadow('conversation.chat.node', { key: 'assistant-step', priority: BOT_PRIORITY, locale: 'chat', inject: assistantFace }, AssistantCell),
     () => shadow('conversation.chat.node', { key: 'turn-trigger', priority: BOT_PRIORITY, locale: 'chat', inject: face }, TriggerCell),
