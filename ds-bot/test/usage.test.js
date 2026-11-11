@@ -417,3 +417,29 @@ test('a version 3 ledger keeps its rows and owners and gains the group columns',
   assert.deepEqual(view.rooms, [{ id: 'r1', name: '研发群' }])
   assert.deepEqual(second.warnings, [])
 })
+
+test('the ledger stays at the version older DS Bot reads, and a version 4 file keeps its metered calls', async (t) => {
+  const first = start()
+  const { home } = first
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
+  await drain(first.meter({ sessionId: 's-b1', purpose: 'compaction', provider: 'deepseek', model: 'v4-flash', messages: [] }, async function* () { yield { type: 'usage', usage: usage(1000, 100) } }))
+  await first.call('usage', { timeZone: 'UTC' })
+  await first.ctx.dispose()
+  const { DatabaseSync } = await import('node:sqlite')
+  const versionOf = () => {
+    const db = new DatabaseSync(join(home, 'usage.sqlite'))
+    try { return db.prepare('PRAGMA user_version').get().user_version } finally { db.close() }
+  }
+  // DS Bot without the group columns drops every table of a version other than 3.
+  assert.equal(versionOf(), 3)
+  const db = new DatabaseSync(join(home, 'usage.sqlite'))
+  db.exec('PRAGMA user_version = 4')
+  db.close()
+
+  const second = start(home)
+  const view = (await second.call('usage', { timeZone: 'UTC' })).value
+  await second.ctx.dispose()
+  assert.equal(totals(view)['Chief/compaction'], 1100)
+  assert.deepEqual(second.warnings, [])
+  assert.equal(versionOf(), 3)
+})

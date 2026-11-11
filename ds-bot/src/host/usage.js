@@ -15,7 +15,9 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const LEDGER_VERSION = 4
+// Stays 3 while a change only adds columns: DS Bot before that change wipes a ledger
+// whose version it does not know, and a rebuild from the logs loses the metered calls.
+const LEDGER_VERSION = 3
 const PAGE_MESSAGES = 400
 const PAGE_TIMEOUT_MS = 20_000
 const SCAN_TIMEOUT_MS = 180_000
@@ -145,27 +147,26 @@ function sqliteLedger(DatabaseSync, path) {
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec('PRAGMA journal_mode = WAL')
     const version = db.prepare('PRAGMA user_version').get().user_version
-    // Version 2 lacks the seal's watermark and version 3 the group of a call's owner, so
-    // their rows are kept and gain the columns. Desktop and Web may open it at once: the
-    // version is read again under the write lock.
-    if (version === 2 || version === 3) {
-      db.exec('BEGIN IMMEDIATE')
-      try {
-        const now = db.prepare('PRAGMA user_version').get().user_version
-        if (now === 2 || now === 3) {
-          // Only the columns the file lacks, so a half-migrated file finishes cleanly.
-          const has = (table, column) => db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)
+    // Version 2 lacks the seal's watermark, and a version 3 file from before the group
+    // columns lacks the group of a call's owner: their rows are kept and gain the
+    // columns. Version 4 is the same file as one fork build numbered it. Desktop and Web
+    // may open it at once, so each column is looked for again under the write lock.
+    const has = (table, column) => db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)
+    if (version === 2 || version === 3 || version === 4) {
+      if (version !== LEDGER_VERSION || !has('owners', 'room_name')) {
+        db.exec('BEGIN IMMEDIATE')
+        try {
           if (!has('marks', 'listed')) db.exec('ALTER TABLE marks ADD COLUMN listed INTEGER')
           if (!has('owners', 'room')) db.exec('ALTER TABLE owners ADD COLUMN room TEXT')
           if (!has('owners', 'room_name')) db.exec('ALTER TABLE owners ADD COLUMN room_name TEXT')
           db.exec(`PRAGMA user_version = ${LEDGER_VERSION}`)
+          db.exec('COMMIT')
+        } catch (error) {
+          db.exec('ROLLBACK')
+          throw error
         }
-        db.exec('COMMIT')
-      } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
       }
-    } else if (version !== LEDGER_VERSION) {
+    } else {
       db.exec(`
         DROP TABLE IF EXISTS calls;
         DROP TABLE IF EXISTS marks;
