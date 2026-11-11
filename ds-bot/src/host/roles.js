@@ -29,6 +29,9 @@ export const RIGHT_LINES = {
 }
 
 const rank = role => ROLES.indexOf(role)
+// Whether `role` may do what needs `needed`. A role or a need not in ROLES is refused:
+// the guard is the access boundary, so what it does not know it does not let through.
+export const allows = (role, needed) => rank(role) !== -1 && rank(needed) !== -1 && rank(role) <= rank(needed)
 
 export function install(rt) {
   const { ctx, home } = rt
@@ -50,7 +53,7 @@ export function install(rt) {
     const needed = RIGHTS[tool]
     if (needed === undefined) return undefined
     const role = roleOf(botId, args.group)
-    return { tool, role, needed, allowed: rank(role) <= rank(needed) }
+    return { tool, role, needed, allowed: allows(role, needed) }
   }
 
   const neededText = needed => (needed === 'main' ? 'a Main Bot' : 'a Main Bot or the group\'s admin')

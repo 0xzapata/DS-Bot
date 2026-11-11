@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { format } from 'node:util'
-import { install } from '../src/host/roles.js'
+import { allows, install } from '../src/host/roles.js'
 import { normalize, unquote } from '../src/host/text.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -82,4 +82,12 @@ test('the roles view lists each role, its rights, and who holds it', (t) => {
   assert.deepEqual(view.roles.map(({ role, bots }) => [role, bots]), [['main', ['chief']], ['admin', ['lead']], ['member', ['kai']]])
   assert.ok(view.roles.every(role => role.rights.length > 0))
   assert.deepEqual(Object.fromEntries(view.gated.map(({ tool, needed }) => [tool, needed])), { create_bot: 'main', stop_bot: 'main', create_group: 'main', delete_group: 'main', update_group: 'admin' })
+})
+
+test('the guard refuses a role or a need it does not know', () => {
+  assert.equal(allows('main', 'main'), true)
+  assert.equal(allows('admin', 'admin'), true)
+  assert.equal(allows('member', 'admin'), false)
+  for (const role of ['guest', '', undefined, null, 'Main']) assert.equal(allows(role, 'main'), false, String(role))
+  for (const needed of ['root', undefined]) assert.equal(allows('main', needed), false, String(needed))
 })
