@@ -37,7 +37,7 @@ export function install(rt) {
   const fail = (message, code = 'bot/error') => ({ ok: false, error: { code, message, details: {} } })
   // Models come from DSH, not state.json, so a provider added on the Models pages of Settings
   // changes the view without a new revision.
-  const modelsKey = () => `${rt.cachedCatalog().map(entry => `${entry.ref}${entry.needsKey ? '!' : ''}${entry.reasoning ? `:${JSON.stringify(entry.reasoning)}` : ''}`).join(',')}|${rt.cachedDefault() ?? ''}`
+  const modelsKey = () => `${rt.cachedCatalog().map(entry => `${entry.ref}${entry.needsKey ? '!' : ''}${entry.reasoning ? `:${JSON.stringify(entry.reasoning)}` : ''}`).join(',')}|${rt.cachedDefault() ?? ''}|${rt.jevKey?.().set === true ? 'jev' : ''}`
   const view = () => ({
     revision: state.revision,
     workspaceId: state.workspaceId ?? null,
@@ -90,6 +90,8 @@ export function install(rt) {
     permissions: rt.permissionCatalog?.() ?? null,
     modelsKey: modelsKey(),
     prefs: state.prefs,
+    // Only whether a TypeSafe key is set and Settings can change it; never the key.
+    jevKey: rt.jevKey?.() ?? { set: false, writable: false },
     // Whether a Desktop window should serve Bot browser reads (see browser.js).
     browser: rt.browserEnabled,
     // False when config.memory turns memory off: no Memory row or panel.
@@ -193,6 +195,28 @@ export function install(rt) {
       if (body.memoryAutoRecall === false) state.prefs.memoryAutoRecall = false
       else delete state.prefs.memoryAutoRecall
     }
+    // Quick judgments (jev.js): off unless the user turns them on.
+    if (body.jev !== undefined) {
+      if (body.jev === true) state.prefs.jev = true
+      else delete state.prefs.jev
+    }
+    // A one-line "when to use this model" note per model, which marks it for Auto. An
+    // empty note or `null` takes the model out.
+    if (body.modelNotes !== undefined) {
+      if (body.modelNotes === null || typeof body.modelNotes !== 'object' || Array.isArray(body.modelNotes)) throw invalid('Model notes must be an object keyed by model')
+      const next = { ...state.prefs.modelNotes }
+      for (const [ref, note] of Object.entries(body.modelNotes)) {
+        if (!/^[^/\s]+\/\S+$/.test(ref) || ref.length > 200) throw invalid(`Unknown model ${ref}`)
+        if (rt.isLocalAgentRef?.(ref) === true) throw invalid('A local agent is never picked automatically')
+        const text = typeof note === 'string' ? note.replace(/\s+/g, ' ').trim() : ''
+        if (note !== null && typeof note !== 'string') throw invalid('A model note is text')
+        if (text.length > 300) throw invalid('A model note is at most 300 characters')
+        if (text === '') delete next[ref]
+        else next[ref] = text
+      }
+      if (Object.keys(next).length === 0) delete state.prefs.modelNotes
+      else state.prefs.modelNotes = next
+    }
     // The user's model price table, per million tokens, keyed by "provider/model".
     // `null` for a model removes its price; an unpriced model shows no money, never zero.
     if (body.prices !== undefined) {
@@ -262,6 +286,9 @@ export function install(rt) {
           if (body.value === null) await rt.clearProviderKey(String(body.provider ?? ''))
           else await rt.setProviderKey(String(body.provider ?? ''), body.value)
           return ok(await rt.providersView())
+        // The TypeSafe key for quick judgments: written only, never read back.
+        case 'jev-key':
+          return ok(await rt.setJevKey(body.value === null ? null : body.value))
         case 'provider-add':
           return ok(await rt.addProvider(body))
         case 'provider-models':
