@@ -183,11 +183,11 @@ async function start(t, { saved = team(), windows = {} } = {}) {
   }
   // A message reaches an idle Session: the driver wakes and DSH proposes the turn's
   // first step on the Session's model, through every pre-step listener in order.
-  const firstStep = async (sessionId, messages, { model = FLASH, step = 1, wake = true } = {}) => {
+  const firstStep = async (sessionId, messages, { model = FLASH, step = 1, wake = true, signal = AbortSignal.timeout(60_000) } = {}) => {
     if (wake) status(sessionId, 'running')
     const [provider, id] = model.split('/')
     const chain = ctx.listeners.get('agent/pre-step')
-    const payload = { agent: agentOf(sessionId), messages, step, turn: 1, signal: AbortSignal.timeout(60_000), modelSelection: { provider, model: id } }
+    const payload = { agent: agentOf(sessionId), messages, step, turn: 1, signal, modelSelection: { provider, model: id } }
     const run = index => (index >= chain.length ? Promise.resolve({ kind: 'enter', messages }) : chain[index](payload, () => run(index + 1)))
     return run(0)
   }
@@ -252,6 +252,22 @@ test('low confidence, the same model, a failed judgment and a late one all leave
   }
   assert.deepEqual(env.selected, [])
   assert.equal(jev.length, 4, 'a failed judgment is not remembered: every message asks again')
+})
+
+test('Stop during the judgment changes no model', async (t) => {
+  const jev = await fakeJev(t, body => ({ ...choose(PRO, 0.9)(body), delayMs: 200 }))
+  const env = await start(t)
+  const stop = new AbortController()
+  setTimeout(() => stop.abort({ kind: 'user' }), 50)
+  await env.firstStep('b', [userMessage('Debug this race')], { signal: stop.signal })
+  env.status('b', 'idle')
+  assert.equal(jev.length, 1)
+  assert.deepEqual(env.selected, [])
+  assert.equal(env.state().bots.b.appliedModel, FLASH)
+  assert.deepEqual(env.agentOf('b').inbox.nextTurn, [])
+  await until(() => env.audit().length === 1, 'the audit line')
+  assert.equal(env.audit()[0].applied, false)
+  assert.equal(env.audit()[0].reason, 'stopped')
 })
 
 test('a queued message, a group message, a Bot\'s message and Auto off ask nothing', async (t) => {

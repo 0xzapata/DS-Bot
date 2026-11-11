@@ -137,6 +137,8 @@ export function install(rt) {
       return next()
     }
     if (verdict === undefined) return next()
+    // Stopped while Jev answered: the stopped turn changes nothing.
+    if (verdict.apply === true && payload.signal?.aborted) verdict = { ...verdict, apply: false, reason: 'stopped' }
     if (verdict.apply === true) {
       try {
         await select(bot, agent.id, verdict.pick)
