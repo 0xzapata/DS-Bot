@@ -194,7 +194,7 @@ async function start(t, { saved = team(), windows = {} } = {}) {
   // The user's own messages a step carries; the clock and memory listeners add theirs.
   const own = decision => decision.messages.filter(item => item.source?.kind === 'user').map(item => item.id)
   const state = () => JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'))
-  const audit = () => (existsSync(join(home, 'model-audit.jsonl')) ? readFileSync(join(home, 'model-audit.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [])
+  const audit = () => (existsSync(join(home, 'model-audit.jsonl')) ? readFileSync(join(home, 'model-audit.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)) : [])
   return { rt, ctx, call, firstStep, own, status, agentOf, selected, startup, state, audit, warnings, home }
 }
 
@@ -377,4 +377,29 @@ test('notes and the switch are team preferences; the key never reaches the clien
   assert.doesNotMatch(text, /ts-auto-test-key/)
   assert.deepEqual(view.value.jevKey, { set: true, writable: false })
   assert.doesNotMatch(env.warnings.join('\n'), /ts-auto-test-key/)
+})
+
+test('the key is in no file of the data folder, no view and no log after a pick and a failure', async (t) => {
+  let fail = false
+  await fakeJev(t, body => (fail ? { status: 500 } : choose(PRO, 0.9)(body)))
+  const env = await start(t)
+  await env.firstStep('b', [userMessage('hard work')])
+  env.status('b', 'idle')
+  // The turn the pick holds back runs on the pick, unasked.
+  await env.firstStep('b', [userMessage('hard work')], { model: PRO })
+  env.status('b', 'idle')
+  fail = true
+  await env.firstStep('b', [userMessage('again')], { model: PRO })
+  env.status('b', 'idle')
+  await until(() => env.audit().length === 2, 'both audit lines')
+  await env.call('usage', { timeZone: 'UTC' })
+  const { readdirSync, statSync } = await import('node:fs')
+  const files = []
+  const walk = dir => { for (const name of readdirSync(dir)) { const path = join(dir, name); if (statSync(path).isDirectory()) walk(path); else files.push(path) } }
+  walk(env.home)
+  assert.ok(files.some(path => path.endsWith('model-audit.jsonl')) && files.some(path => path.endsWith('usage.sqlite')))
+  for (const path of files) assert.doesNotMatch(readFileSync(path).toString('latin1'), /ts-auto-test-key/, path)
+  assert.doesNotMatch(JSON.stringify(await env.call('state', {})), /ts-auto-test-key/)
+  assert.doesNotMatch(env.warnings.join('\n'), /ts-auto-test-key/)
+  assert.ok(env.warnings.some(line => /judgment \(judgment\) not used: HTTP 500/.test(line)))
 })
