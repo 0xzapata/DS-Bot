@@ -443,3 +443,16 @@ test('the ledger stays at the version older DS Bot reads, and a version 4 file k
   assert.deepEqual(second.warnings, [])
   assert.equal(versionOf(), 3)
 })
+
+// Memory work was tagged 'memory' before the cost feature named it 'memory-review'.
+// Rows of both names count as one use, under the name the page shows.
+test('memory work under its old and its new name is one use in the view', async (t) => {
+  const { meter, call, stop } = start()
+  t.after(stop)
+  for (const purpose of ['memory', 'memory-review']) {
+    await drain(meter({ sessionId: 's-b1', purpose, provider: 'deepseek', model: 'v4-flash', messages: [] }, async function* () { yield { type: 'usage', usage: usage(10, 1) } }))
+  }
+  const view = (await call('usage', { timeZone: 'UTC' })).value
+  assert.ok(!view.kinds.includes('memory'), JSON.stringify(view.kinds))
+  assert.equal(totals(view)['Chief/memory-review'], 22)
+})

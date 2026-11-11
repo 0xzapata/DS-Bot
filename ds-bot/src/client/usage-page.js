@@ -144,7 +144,7 @@ function ownerFace(owner, roster) {
 }
 
 function kindLabel(kind, botFocus) {
-  const labels = { chat: botFocus ? t('Own chat') : t('Conversations'), group: t('Group chats'), compaction: t('Compaction and handoff'), steward: t('Context steward'), handoff: t('Handoff notes'), checkpoint: t('Checkpoints'), image: t('Image reading'), memory: t('Memory'), 'memory-review': t('Memory review'), 'session-title': t('Titles'), btw: t('Side chat'), side: t('Side chat'), other: t('Other') }
+  const labels = { chat: botFocus ? t('Own chat') : t('Conversations'), group: t('Group chats'), compaction: t('Compaction and handoff'), steward: t('Context steward'), handoff: t('Handoff notes'), checkpoint: t('Checkpoints'), image: t('Image reading'), 'memory-review': t('Memory review'), 'session-title': t('Titles'), btw: t('Side chat'), side: t('Side chat'), other: t('Other') }
   return labels[kind] ?? kind
 }
 

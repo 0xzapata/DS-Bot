@@ -1310,11 +1310,11 @@ export function install(rt) {
     if (body.roomId !== undefined && body.roomId !== null) {
       const room = rt.roomOf(String(body.roomId))
       if (room === undefined) throw new Error('Unknown group chat')
-      return { id: room.id, name: room.name, group: true, keeper: keeperOf(room), tag: { sessionId: rt.sessionOfRoom(room), kind: 'memory' }, scopes: { group: groupScope(room.id) } }
+      return { id: room.id, name: room.name, group: true, keeper: keeperOf(room), tag: { sessionId: rt.sessionOfRoom(room), kind: 'memory-review' }, scopes: { group: groupScope(room.id) } }
     }
     const bot = rt.botOf(String(body.botId ?? ''))
     if (bot === undefined) throw new Error('Unknown Bot')
-    return { id: bot.id, name: bot.name, group: false, keeper: bot, tag: { sessionId: rt.chatOf(bot.id), kind: 'memory' }, scopes: { own: ownScope(bot.id), team: TEAM } }
+    return { id: bot.id, name: bot.name, group: false, keeper: bot, tag: { sessionId: rt.chatOf(bot.id), kind: 'memory-review' }, scopes: { own: ownScope(bot.id), team: TEAM } }
   }
   const panelBody = panel => (panel.group ? { roomId: panel.id } : { botId: panel.id })
   const panelLabel = (panel, scope) => (scope.kind === 'team' ? 'the team memory' : panel.group ? 'the group memory' : `${panel.name}'s memory`)

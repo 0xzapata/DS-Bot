@@ -68,7 +68,7 @@ export function installTidy(rt, memory) {
     let changes = []
     if (open.length >= ENTRIES_MIN) {
       const max = Math.max(1, Math.floor(offered.length / SHARE_MAX))
-      const reply = await botShot(job.keeper, tidySystem({ who: job.who, max }), tidyRequest({ entries: open, language: languageNow() }), { sessionId: job.scope.kind === 'bot' ? rt.chatOf(job.keeper.id) : job.scope.kind === 'group' ? job.scope.roomId : rt.chatOf(job.keeper.id), kind: 'memory' })
+      const reply = await botShot(job.keeper, tidySystem({ who: job.who, max }), tidyRequest({ entries: open, language: languageNow() }), { sessionId: job.scope.kind === 'bot' ? rt.chatOf(job.keeper.id) : job.scope.kind === 'group' ? job.scope.roomId : rt.chatOf(job.keeper.id), kind: 'memory-review' })
       const parsed = parseTidy(reply)
       if (parsed === undefined) rt.warn('ds-bot: the memory tidy of %s got no list of changes from the model', key)
       else changes = parsed

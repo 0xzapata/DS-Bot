@@ -571,7 +571,8 @@ export function install(rt) {
     const buckets = new Map()
     const storedKinds = ledger.kinds()
     for (const group of ledger.groups()) {
-      const kind = group.kind === 'turn' ? (groupSessions.has(group.session) || storedKinds.get(group.session) === 'group' ? 'group' : 'chat') : group.kind
+      // Rows kept before memory work was named 'memory-review' count under that name.
+      const kind = group.kind === 'turn' ? (groupSessions.has(group.session) || storedKinds.get(group.session) === 'group' ? 'group' : 'chat') : group.kind === 'memory' ? 'memory-review' : group.kind
       const row = [hourOf(group.slot * SLOT_MS), ownerOf(group.session), modelOf(group.provider, group.model), kindOf(kind)]
       const room = roomOf(group.session)
       const id = `${row.join('\n')}\n${room}`
