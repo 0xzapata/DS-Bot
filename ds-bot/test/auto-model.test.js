@@ -372,6 +372,13 @@ test('notes and the switch are team preferences; the key never reaches the clien
   assert.equal((await env.call('set-prefs', { modelNotes: { [PRO]: '' } })).ok, true)
   assert.equal(env.state().prefs.modelNotes, undefined)
   assert.equal((await env.call('set-prefs', { modelNotes: { 'local-acp-x/default': 'cli' } })).ok, false)
+  // A note is only for a model DSH serves, so the number of notes stays bounded by the
+  // catalog; a note left for a model that is gone can still be cleared.
+  const unknown = await env.call('set-prefs', { modelNotes: { 'ds/nope': 'Never served' } })
+  assert.equal(unknown.ok, false)
+  assert.match(unknown.error.message, /Unknown model ds\/nope/)
+  assert.equal(env.state().prefs.modelNotes, undefined)
+  assert.equal((await env.call('set-prefs', { modelNotes: { 'ds/gone': null } })).ok, true)
   const view = await env.call('state', {})
   const text = JSON.stringify(view)
   assert.doesNotMatch(text, /ts-auto-test-key/)

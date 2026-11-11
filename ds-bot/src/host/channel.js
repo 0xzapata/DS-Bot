@@ -205,11 +205,15 @@ export function install(rt) {
     if (body.modelNotes !== undefined) {
       if (body.modelNotes === null || typeof body.modelNotes !== 'object' || Array.isArray(body.modelNotes)) throw invalid('Model notes must be an object keyed by model')
       const next = { ...state.prefs.modelNotes }
+      // Only a model DSH serves takes a note, which keeps their number to the catalog's;
+      // a note for a model that is gone can still be cleared.
+      const served = new Set((await rt.catalog()).map(entry => entry.ref))
       for (const [ref, note] of Object.entries(body.modelNotes)) {
         if (!/^[^/\s]+\/\S+$/.test(ref) || ref.length > 200) throw invalid(`Unknown model ${ref}`)
         if (rt.isLocalAgentRef?.(ref) === true) throw invalid('A local agent is never picked automatically')
         const text = typeof note === 'string' ? note.replace(/\s+/g, ' ').trim() : ''
         if (note !== null && typeof note !== 'string') throw invalid('A model note is text')
+        if (text !== '' && !served.has(ref)) throw invalid(`Unknown model ${ref}`)
         if (text.length > 300) throw invalid('A model note is at most 300 characters')
         if (text === '') delete next[ref]
         else next[ref] = text
