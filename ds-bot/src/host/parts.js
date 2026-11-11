@@ -1743,6 +1743,9 @@ export function install(rt) {
     if (agent.status !== 'idle' || rt.live.get(sessionId)?.turn !== undefined || switches.has(sessionId)) refuse('The Bot is working; wait for it to finish or stop it first', 'bot/busy')
     if (agent.inbox.nextStep.length > 0 || agent.inbox.nextTurn.length > 0) refuse('The Bot has queued messages; let it read them first', 'bot/busy')
     if (state.questions[sessionId] !== undefined || state.views?.[sessionId] !== undefined || rt.waitsForApproval?.(sessionId) === true) refuse('The Bot is waiting for your answer; answer or dismiss it first', 'bot/busy')
+    // A subagent run belongs to this Session, and archiving it stops the run: its result
+    // would reach no chat. A teammate's reply finds the Bot's new chat by itself.
+    if (rt.hasSubagents?.(sessionId) === true) refuse('A subagent the Bot started is still working; wait for it to finish or stop it first', 'bot/busy')
     const job = await startSwitch(agent, { clean: true })
     if (job?.moved !== true) refuse('The new session could not be started; try again', 'bot/refused')
     return { sessionId: rt.chatOf(bot.id), previous: sessionId }

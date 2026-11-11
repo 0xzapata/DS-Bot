@@ -583,3 +583,59 @@ test('a continued subagent hands up each run\'s own result', async (t) => {
   assert.ok(answer.includes('SCHEDULE: Monday'), `the second run's result goes up: ${answer}`)
   assert.ok(answer.indexOf('COST: 42') < answer.indexOf('SCHEDULE: Monday'), `in run order: ${answer}`)
 })
+
+// /new (#122) while a handoff is open: a teammate's reply reaches the Bot's new chat and
+// the answer still goes up; a subagent run belongs to the old chat, whose archive would
+// stop it, so /new waits for it.
+test('a reply handed back after /new reaches the new chat, and the answer goes up', async (t) => {
+  const { start } = bench(t)
+  const first = await start(seed())
+  const { agents, emit, tool, call } = first
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  turns.take('b')
+  await tool('message_bot', { to: 'Tester', message: 'review my work' }, 'b')
+  turns.end('b', 'handed it on')
+  const renewed = await call('bot-new-session', { botId: 'b' })
+  assert.equal(renewed.ok, true, JSON.stringify(renewed))
+  const fresh = renewed.value.sessionId
+  turns.take('c')
+  turns.end('c', 'two findings')
+  await settled(() => callsOf(agents, fresh).length === 1)
+  assert.match(textOf(callsOf(agents, fresh)[0][1].content), /^\[Reply from Tester · for the work Chief asked you for[^\n]*\ntwo findings$/)
+  assert.equal(callsOf(agents, 'b').length, 1)
+  turns.take(fresh)
+  turns.end(fresh, 'done')
+  await settled(() => callsOf(agents, 'a').length === 1)
+  const answer = textOf(callsOf(agents, 'a')[0][1].content)
+  assert.ok(answer.includes('two findings'), answer)
+  assert.deepEqual(await worksIn(first), {})
+})
+
+test('/new waits while a subagent the Bot delegated to is still out', async (t) => {
+  const { start } = bench(t)
+  const first = await start(seed())
+  const { agents, emit, emitScoped, tool, call } = first
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  turns.take('b')
+  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  turns.end('b', 'subagent is on it')
+  const refused = await call('bot-new-session', { botId: 'b' })
+  assert.equal(refused.error?.code, 'bot/busy', JSON.stringify(refused))
+  assert.match(refused.error.message, /subagent/)
+  assert.equal((await call('state', {})).value.bots.find(bot => bot.id === 'b').sessionId, 'b')
+  // Once the run is back, /new goes ahead.
+  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed') })
+  emit('b', 'turn/start', { turn: 2 })
+  emit('b', 'user/message', { content: textBlock('Background subagent sub1 finished.'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
+  emit('b', 'assistant/message', assistantText('all reviewed'))
+  emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  await settled(() => callsOf(agents, 'a').length === 1)
+  assert.equal((await call('bot-new-session', { botId: 'b' })).ok, true)
+})
