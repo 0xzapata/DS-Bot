@@ -690,5 +690,6 @@ export function install(rt) {
     })()
   })
 
-  Object.assign(rt, { usageView, tagUsage, labelUsage, carryUsageTag, ownRequest })
+  // A call outside DSH's model layer (a quick judgment) is counted the same way.
+  Object.assign(rt, { usageView, tagUsage, labelUsage, carryUsageTag, ownRequest, recordUsage: record })
 }

@@ -456,3 +456,22 @@ test('memory work under its old and its new name is one use in the view', async 
   assert.ok(!view.kinds.includes('memory'), JSON.stringify(view.kinds))
   assert.equal(totals(view)['Chief/memory-review'], 22)
 })
+
+// A quick judgment is not a DSH model call, so it is recorded directly. Its row has the
+// same columns as every other one: the ledger keeps version 3 and older DS Bot reads it.
+test('quick judgments count by call and input tokens, priced only when the user set a price', async (t) => {
+  const { call, rt, stop, home } = start()
+  t.after(stop)
+  for (const tokens of [120, 80]) rt.recordUsage({ sessionId: 's-b1', kind: 'judgment', provider: 'typesafe', model: 'jev-1.14.0', usage: { inputTokens: tokens } })
+  const view = (await call('usage', { timeZone: 'UTC' })).value
+  const at = view.models.findIndex(model => model.key === 'typesafe/jev-1.14.0')
+  assert.ok(at >= 0)
+  assert.equal(view.models[at].price, undefined)
+  const rows = view.rows.filter(row => row[2] === at)
+  assert.deepEqual(rows.map(row => [view.kinds[row[3]], row[4], row[7], row[8]]), [['judgment', 200, 0, 2]])
+  await call('set-prefs', { prices: { 'typesafe/jev-1.14.0': { input: 0.042, cachedInput: 0, output: 0 } } })
+  assert.deepEqual((await call('usage', { timeZone: 'UTC' })).value.models.find(model => model.key === 'typesafe/jev-1.14.0').price, { input: 0.042, cachedInput: 0, output: 0 })
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'usage.sqlite'))
+  try { assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3) } finally { db.close() }
+})
