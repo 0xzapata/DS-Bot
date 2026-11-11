@@ -56,12 +56,14 @@ export function CommandPalette({ start, token, roster, actions, useSessions }) {
     }
     return JSON.stringify(hits)
   })
-  const [closedHits, setClosedHits] = useState([])
+  // Hits come back later than the query: they carry theirs, so another query shows none.
+  const [closedAnswer, setClosedAnswer] = useState({ wanted: '', hits: [] })
+  const closedHits = closedAnswer.wanted === wanted ? closedAnswer.hits : []
   const searchesClosed = wanted.length >= 2 && roster.bots.some(bot => bot.closed?.length > 0)
   useEffect(() => {
-    if (!searchesClosed) { setClosedHits([]); return undefined }
+    if (!searchesClosed) return undefined
     let stale = false
-    const timer = setTimeout(() => { void actions.searchClosed(wanted).then((hits) => { if (!stale) setClosedHits(hits) }) }, 200)
+    const timer = setTimeout(() => { void actions.searchClosed(wanted).then((hits) => { if (!stale) setClosedAnswer({ wanted, hits }) }) }, 200)
     return () => { stale = true; clearTimeout(timer) }
   }, [wanted, searchesClosed])
   const matchesName = (...fields) => wanted === '' || fields.some(field => (field ?? '').toLowerCase().includes(wanted))
@@ -94,7 +96,6 @@ export function CommandPalette({ start, token, roster, actions, useSessions }) {
       run: () => actions.openSession(id),
     }
   })
-  messages.push(...closedMessages(roster, closedHits, actions))
   if (messages.length) sections.push([t('Messages'), messages])
   const commands = [
     { key: 'cmd:new', icon: h(PlusIcon), title: t('New chat'), run: () => actions.openNewChat('new') },
@@ -103,6 +104,9 @@ export function CommandPalette({ start, token, roster, actions, useSessions }) {
     { key: 'cmd:settings', icon: h(GearIcon), title: t('Settings'), run: () => actions.openSettings('general') },
   ].filter(command => matchesName(command.title))
   if (commands.length) sections.push([t('Commands'), commands])
+  // Last, so hits that arrive late add rows below the cursor and never move the ones above.
+  const closed = closedMessages(roster, closedHits, actions)
+  if (closed.length) sections.push([t('Earlier messages'), closed])
   const rows = sections.flatMap(([, items]) => items)
   const active = Math.min(cursor, Math.max(rows.length - 1, 0))
   const shown = rows.map(row => row.key).join('\n')

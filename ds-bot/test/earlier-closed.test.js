@@ -100,9 +100,10 @@ const { outputFiles } = await build({
   external: ['react', 'react-dom', '@deepseek-ai/dsh-client-ui-primitives'],
 })
 const h = (type, props, ...children) => ({ type, props: { ...props, children } })
+let seededAnswer
 const react = {
   createContext: initial => ({ value: initial }), useContext: ctx => ctx.value, useCallback: fn => fn, createElement: h, Fragment: Symbol('Fragment'),
-  useEffect() {}, useLayoutEffect() {}, useState: initial => [initial, () => {}], useMemo: make => make(), useRef: current => ({ current }), useId: () => 'id',
+  useEffect() {}, useLayoutEffect() {}, useState: initial => [initial?.hits ? seededAnswer ?? initial : initial, () => {}], useMemo: make => make(), useRef: current => ({ current }), useId: () => 'id',
   useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
 }
 const module = { exports: {} }
@@ -115,7 +116,7 @@ runInNewContext(outputFiles[0].text, {
     throw new Error(`Unexpected platform module ${name}`)
   },
 })
-const { EarlierDock, closedMessages } = module.exports
+const { EarlierDock, CommandPalette, closedMessages } = module.exports
 const expand = (node) => {
   if (node === null || node === undefined || typeof node === 'boolean') return null
   if (Array.isArray(node)) return node.map(expand)
@@ -174,4 +175,29 @@ test('a closed chat stays offered after an ordinary part switch follows /new, so
   assert.equal(text(button), 'Earlier messages')
   assert.ok(find(dock(followed, { open: 'writer' }), node => node.props?.role === 'feed') !== undefined)
   assert.equal(dock(followed, { sessionId: 'writer-mid' }), null)
+})
+
+// The palette keeps the hits for the query on screen, and adds them below every other row.
+const paletteRows = (start, answer) => {
+  seededAnswer = answer
+  const rendered = expand(CommandPalette({
+    start, token: 1, roster: { ...roster(bot()), rooms: [], agents: [], prefs: {} }, actions: { closePalette() {} }, useSessions: select => select({ byId: {}, projectionsBySession: {} }),
+  }))
+  seededAnswer = undefined
+  const rows = []
+  const walk = (node) => {
+    if (Array.isArray(node)) return node.forEach(walk)
+    if (!node || typeof node !== 'object') return
+    if (node.props?.role === 'option') rows.push(text(node.props.children))
+    walk(node.props.children)
+  }
+  walk(rendered)
+  return rows
+}
+test('the palette shows closed-chat hits only for the query on screen, below the rows the cursor can be on', () => {
+  const answer = { wanted: 'new', hits: [{ botId: 'writer', sessionId: 'writer-old', text: 'a new draft' }] }
+  const rows = paletteRows('new', answer)
+  assert.ok(rows.at(-1).includes('a new draft'), 'the hit is the last row')
+  assert.ok(rows.slice(0, -1).some(row => row.includes('New chat')), 'Commands come before it')
+  assert.ok(!paletteRows('newer', answer).some(row => row.includes('a new draft')), 'the hit of another query is not shown')
 })

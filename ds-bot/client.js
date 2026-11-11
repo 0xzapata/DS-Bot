@@ -24402,17 +24402,15 @@ function CommandPalette({ start, token, roster, actions, useSessions }) {
     }
     return JSON.stringify(hits);
   });
-  const [closedHits, setClosedHits] = (0, import_react53.useState)([]);
+  const [closedAnswer, setClosedAnswer] = (0, import_react53.useState)({ wanted: "", hits: [] });
+  const closedHits = closedAnswer.wanted === wanted ? closedAnswer.hits : [];
   const searchesClosed = wanted.length >= 2 && roster.bots.some((bot) => bot.closed?.length > 0);
   (0, import_react53.useEffect)(() => {
-    if (!searchesClosed) {
-      setClosedHits([]);
-      return void 0;
-    }
+    if (!searchesClosed) return void 0;
     let stale = false;
     const timer = setTimeout(() => {
       void actions.searchClosed(wanted).then((hits) => {
-        if (!stale) setClosedHits(hits);
+        if (!stale) setClosedAnswer({ wanted, hits });
       });
     }, 200);
     return () => {
@@ -24466,7 +24464,6 @@ function CommandPalette({ start, token, roster, actions, useSessions }) {
       run: () => actions.openSession(id)
     };
   });
-  messages.push(...closedMessages(roster, closedHits, actions));
   if (messages.length) sections.push([t("Messages"), messages]);
   const commands = [
     { key: "cmd:new", icon: (0, import_react53.createElement)(PlusIcon), title: t("New chat"), run: () => actions.openNewChat("new") },
@@ -24475,6 +24472,8 @@ function CommandPalette({ start, token, roster, actions, useSessions }) {
     { key: "cmd:settings", icon: (0, import_react53.createElement)(GearIcon), title: t("Settings"), run: () => actions.openSettings("general") }
   ].filter((command) => matchesName(command.title));
   if (commands.length) sections.push([t("Commands"), commands]);
+  const closed = closedMessages(roster, closedHits, actions);
+  if (closed.length) sections.push([t("Earlier messages"), closed]);
   const rows2 = sections.flatMap(([, items]) => items);
   const active = Math.min(cursor, Math.max(rows2.length - 1, 0));
   const shown = rows2.map((row) => row.key).join("\n");
