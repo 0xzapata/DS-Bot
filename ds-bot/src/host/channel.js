@@ -537,6 +537,7 @@ export function install(rt) {
         case 'view-reply': {
           if (typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')
           await rt.load()
+          refuseClosed(body.sessionId)
           const past = rt.pastOwners.get(body.sessionId)
           const sessionId = rt.botOf(body.sessionId) ? rt.chatOf(body.sessionId) : past && past.roomId === undefined ? rt.chatOf(past.botId) : body.sessionId
           const pending = rt.own(state.views, sessionId)
@@ -585,6 +586,7 @@ export function install(rt) {
         case 'side-new': {
           if (typeof body.sessionId !== 'string' || body.sessionId === '') return fail('Nothing to open', 'bot/invalid')
           await rt.load()
+          refuseClosed(body.sessionId)
           return ok(await rt.sideNew({ sessionId: body.sessionId }))
         }
         case 'side-ask': {
@@ -592,6 +594,7 @@ export function install(rt) {
           if (body.chatId !== undefined && typeof body.chatId !== 'string') return fail('Nothing to ask', 'bot/invalid')
           if (String(body.text ?? '').trim() === '') return fail('Write a question.', 'bot/invalid')
           await rt.load()
+          refuseClosed(body.sessionId)
           return ok(await rt.sideAsk({ sessionId: body.sessionId, chatId: body.chatId, recent: body.recent === true, text: String(body.text) }))
         }
         case 'side-cancel': {
@@ -742,11 +745,17 @@ export function install(rt) {
     }
   }
 
+  // A part closed by /new (#122) takes nothing, so nothing meant for it reaches, or is
+  // answered from, the Bot's new Session.
+  const refuseClosed = (ref) => {
+    if (rt.closedPart?.(ref) === true) throw Object.assign(new Error('That session was closed by a new session; send to the Bot\'s current chat'), { code: 'bot/closed' })
+  }
+
   // How a user message reaches a Session: a Bot id, a group chat's id, or an earlier
   // part of either resolves to its current part. `content` is the prompt blocks DSH
   // takes (text, image, file receipts); `requestId` lands on the message's source.
   async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
-    if (rt.closedPart?.(ref) === true) throw Object.assign(new Error('That session was closed by a new session; send to the Bot\'s current chat'), { code: 'bot/closed' })
+    refuseClosed(ref)
     const past = rt.pastOwners.get(ref)
     const room = rt.roomOf(ref)
     const sessionId = rt.botOf(ref) ? rt.chatOf(ref)
@@ -765,6 +774,7 @@ export function install(rt) {
   // The user's answer to an ask_user card, from the web or an IM chat. A Bot id or an
   // earlier part of its own chat means the current one.
   async function answerQuestion(sessionRef, questionId, answer) {
+    refuseClosed(sessionRef)
     const past = rt.pastOwners.get(sessionRef)
     const sessionId = rt.botOf(sessionRef) ? rt.chatOf(sessionRef) : past && past.roomId === undefined ? rt.chatOf(past.botId) : sessionRef
     const question = rt.own(state.questions, sessionId)

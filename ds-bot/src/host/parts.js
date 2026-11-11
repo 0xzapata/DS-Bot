@@ -1265,6 +1265,11 @@ export function install(rt) {
     const { agent } = payload
     const past = rt.pastOwners.get(agent.id)
     if (past !== undefined && !rt.isBotSession(agent.id)) {
+      // A part closed by /new hands nothing on: its input was meant for the old chat.
+      if (closedPart(agent.id)) {
+        if (payload.messages.length > 0) rt.warn('ds-bot: %d input(s) for closed part %s not handed on to the new session', payload.messages.length, agent.id)
+        return takeOverStep(agent, payload)
+      }
       await forward(past, payload.messages).catch(error => rt.warn('ds-bot: input for %s was not handed on: %s', agent.id, error))
       return takeOverStep(agent, payload)
     }
