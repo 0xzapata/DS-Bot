@@ -14414,7 +14414,7 @@ function EarlierDock({ sessionId, useRoster, useUi, actions }) {
   const roster = useRoster((value) => value);
   const bot = roster.byId[sessionId];
   const open = useUi((state) => state.earlier === bot?.id);
-  if (bot === void 0 || currentPart(bot) !== sessionId || !(bot.closed ?? []).includes(bot.parts?.at(-1))) return null;
+  if (bot === void 0 || currentPart(bot) !== sessionId || (bot.closed ?? []).length === 0) return null;
   return (0, import_react32.createElement)(
     "div",
     { className: "bt-earlier-dock" },

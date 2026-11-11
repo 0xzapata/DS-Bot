@@ -573,12 +573,14 @@ function EarlierParts({ sessionId, roster, actions }) {
 
 // A Bot started over with /new opens its new part with nothing, so no handoff row mounts
 // the earlier parts above it. This dock, above the composer, offers them instead: the same
-// feed, in a box that scrolls. A part switch with a handoff note keeps its feed in the chat.
+// feed, in a box that scrolls. It stays while any part is closed, also after an ordinary
+// part switch followed, since a search hit in the closed chat opens it. A Bot with no
+// closed part has none; its handoff row keeps the feed in the chat.
 export function EarlierDock({ sessionId, useRoster, useUi, actions }) {
   const roster = useRoster(value => value)
   const bot = roster.byId[sessionId]
   const open = useUi(state => state.earlier === bot?.id)
-  if (bot === undefined || currentPart(bot) !== sessionId || !(bot.closed ?? []).includes(bot.parts?.at(-1))) return null
+  if (bot === undefined || currentPart(bot) !== sessionId || (bot.closed ?? []).length === 0) return null
   return h('div', { className: 'bt-earlier-dock' },
     h('button', { type: 'button', className: 'bt-soft', 'aria-expanded': open, onClick: () => actions.toggleEarlier(bot.id) }, t('Earlier messages')),
     open ? h('div', { className: 'bt-earlier-box' }, h(EarlierParts, { sessionId, roster, actions })) : null)

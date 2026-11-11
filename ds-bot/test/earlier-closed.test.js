@@ -149,10 +149,10 @@ test('the chat of a Bot that was started over offers the closed chat, and opens 
   assert.ok(find(open, node => node.props?.role === 'feed') !== undefined)
 })
 
-test('the dock stays away after an ordinary part switch, in an older part, and with several /new in a row it still opens the chain', () => {
+test('the dock stays away without a closed part, in an older part, and with several /new in a row it still opens the chain', () => {
+  assert.equal(dock(bot({ parts: ['writer-old', 'writer-mid'], closed: [] })), null)
   assert.equal(dock(bot({ closed: [] })), null)
   assert.equal(dock(bot({ closed: undefined })), null)
-  assert.equal(dock(bot({ parts: ['writer-old', 'writer-mid'], closed: ['writer-old'] })), null)
   assert.equal(dock(bot(), { sessionId: 'writer-old' }), null)
   const twice = bot({ parts: ['writer-old', 'writer-mid'], closed: ['writer-old', 'writer-mid'] })
   assert.ok(find(dock(twice, { open: 'writer' }), node => node.props?.role === 'feed') !== undefined)
@@ -166,4 +166,12 @@ test('a palette hit in a closed chat shows the Bot and the words, and opens that
   assert.equal(rows[0].subtitle, '…the zebrafinch draft…')
   rows[0].run()
   assert.deepEqual(opened, [['open', 'writer'], ['earlier', 'writer']])
+})
+
+test('a closed chat stays offered after an ordinary part switch follows /new, so its palette hit lands on it', () => {
+  const followed = bot({ parts: ['writer-old', 'writer-mid'], closed: ['writer-old'] })
+  const button = find(dock(followed), node => node.type === 'button')
+  assert.equal(text(button), 'Earlier messages')
+  assert.ok(find(dock(followed, { open: 'writer' }), node => node.props?.role === 'feed') !== undefined)
+  assert.equal(dock(followed, { sessionId: 'writer-mid' }), null)
 })
