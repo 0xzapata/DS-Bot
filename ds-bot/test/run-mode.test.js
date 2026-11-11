@@ -225,6 +225,17 @@ test('the user has to confirm a change of run mode', async (t) => {
   assert.equal(env.state().bots.b.model, CLI)
 })
 
+test('a change of run mode turns Auto off, and a CLI Bot cannot turn it on', async (t) => {
+  const env = await start(t, { saved: team({ b: { ...team().bots.b, auto: true } }) })
+  assert.equal((await env.call('update-bot', { id: 'b', model: CLI, changeEngine: true })).ok, true)
+  assert.equal(env.state().bots.b.auto, undefined)
+  assert.equal(env.state().bots.b.model, CLI)
+  const refused = await env.call('update-bot', { id: 'b', auto: true })
+  assert.equal(refused.ok, false)
+  assert.match(refused.error.message, /runs on a local agent/)
+  assert.equal(env.state().bots.b.auto, undefined)
+})
+
 test('a change of run mode waits while a subagent of the Bot is out; a model inside it does not', async (t) => {
   const env = await start(t)
   for (const id of ['b', 'gb', 'gb2']) env.lastRoute.set(id, { provider: 'ds', model: 'flash' })
