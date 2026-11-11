@@ -82,6 +82,7 @@ export function install(rt) {
       for (const message of held.messages) agent.inbox.remove(message.id)
       keep(agent, held.messages)
       const bot = rt.botOf(held.botId)
+      audit({ bot: held.botId, name: bot?.name ?? held.name, before: refOf(held.before), pick: held.pickRef, confidence: held.confidence, applied: false, reason: 'stopped' })
       if (sameSelection(agent.model.current(), held.pick) && bot?.auto === true && bot.appliedModel === held.pickRef) {
         agent.model.select(held.before)
         bot.appliedModel = held.appliedModel
@@ -251,7 +252,7 @@ export function install(rt) {
       // and that turn runs on the pick.
       // The live record: the store can replace it (adopt) while the pick waits.
       const live = rt.botOf(botId)
-      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, botId, appliedModel: live?.appliedModel, appliedEffort: live?.appliedEffort })
+      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, confidence: verdict.confidence, botId, name: bot.name, appliedModel: live?.appliedModel, appliedEffort: live?.appliedEffort })
       if (live !== undefined) {
         live.appliedModel = verdict.pick
         if (verdict.effort === undefined) delete live.appliedEffort

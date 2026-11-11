@@ -357,6 +357,21 @@ test('/new after a pick: the chat shows the model its new Session is on, before 
   assert.equal(env.state().bots.b.appliedModel, onSession(), 'shown after the message')
 })
 
+// H2: a Stop after the hold undoes the pick, and the audit says so.
+test('a Stop after the hold: the audit adds a stopped line for the undone pick', async (t) => {
+  await fakeJev(t, choose(PRO, 0.8))
+  const env = await start(t)
+  const stop = new AbortController()
+  assert.deepEqual(env.own(await env.firstStep('b', [userMessage('hard work')], { signal: stop.signal })), [])
+  stop.abort({ kind: 'user' })
+  env.status('b', 'idle')
+  await until(() => env.audit().length === 2, 'the stopped line')
+  const [picked, stopped] = env.audit().map(({ time: _time, ...line }) => line)
+  assert.deepEqual([picked.applied, picked.reason], [true, 'picked'])
+  assert.deepEqual(stopped, { ...picked, applied: false, reason: 'stopped' })
+  assert.equal(env.state().bots.b.appliedModel, FLASH)
+})
+
 test('input that arrives during the judgment keeps the model, and the audit says why', async (t) => {
   await fakeJev(t, body => ({ ...choose(PRO, 0.9)(body), delayMs: 150 }))
   const env = await start(t)
