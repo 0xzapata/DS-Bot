@@ -39,12 +39,9 @@ export function install(rt) {
   // the highest it holds anywhere.
   function roleOf(botId, groupRef) {
     if (rt.isMain(botId)) return 'main'
-    const rooms = Object.values(rt.state.rooms ?? {})
-    if (groupRef !== undefined && groupRef !== '') {
-      const ref = String(groupRef).trim().toLowerCase()
-      const room = rooms.find(item => item.id === groupRef || String(item.name ?? '').trim().toLowerCase() === ref)
-      return room !== undefined && rt.isAdminOf(room, botId) ? 'admin' : 'member'
-    }
+    // The tools' own lookup, so a name they accept ("Dev" in quotes) is not refused here.
+    // A name two groups share passes when the Bot runs either; the tool refuses it.
+    const rooms = groupRef !== undefined && groupRef !== '' ? rt.findRooms(groupRef) : Object.values(rt.state.rooms ?? {})
     return rooms.some(room => rt.isAdminOf(room, botId)) ? 'admin' : 'member'
   }
 

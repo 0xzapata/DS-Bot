@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { format } from 'node:util'
 import { install } from '../src/host/roles.js'
+import { normalize, unquote } from '../src/host/text.js'
 import { fakeContext } from './fake-ctx.js'
 
 // The host enforces each role's rights in DSH's tool guard, before any tool body runs.
@@ -24,6 +25,8 @@ function setup() {
     readOnly: () => undefined,
     isMain: id => state.mainBotIds.includes(id),
     isAdminOf: (room, id) => room.admin === id,
+    // As the store finds a group: by id, else by name without quotes or case.
+    findRooms: ref => (state.rooms[ref] ? [state.rooms[ref]] : Object.values(state.rooms).filter(room => normalize(room.name) === normalize(unquote(ref)))),
     isBotSession: id => id in sessions,
     selfOf: id => sessions[id],
     botOf: id => state.bots[id],
@@ -61,6 +64,9 @@ test('a group admin may change its own group but not another, and tools open to 
   const { callAs, stop } = setup()
   t.after(stop)
   assert.equal(callAs('s-lead', 'update_group', { group: 'Dev' }), undefined)
+  // The names update_group itself accepts: by id, in quotes, in another case.
+  for (const group of ['r1', '"Dev"', '「Dev」', ' dev ']) assert.equal(callAs('s-lead', 'update_group', { group }), undefined, group)
+  assert.match(callAs('s-lead', 'update_group', { group: '"Ops"' }), /you are a member/)
   assert.match(callAs('s-lead', 'update_group', { group: 'Ops' }), /update_group needs a Main Bot or the group's admin, and you are a member/)
   assert.match(callAs('s-lead', 'create_group', {}), /needs a Main Bot, and you are a group admin/)
   assert.match(callAs('s-kai', 'update_group', { group: 'Dev' }), /needs a Main Bot or the group's admin/)
