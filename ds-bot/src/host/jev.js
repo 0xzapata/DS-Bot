@@ -14,13 +14,15 @@ const BASE_URL = 'https://api.typesafe.ai'
 const KEY_REF = 'TYPESAFE_API_KEY'
 const TIMEOUT_MS = 1500
 const MAX_BYTES = 64_000
+// How far a choice's probabilities may sum from 1, as OpenMausBot's parser allows.
+const PROBABILITY_SLACK = 0.1
 
 const isProbability = value => typeof value === 'number' && value >= 0 && value <= 1
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 // The answers to `questions` in `body`, or undefined when the body is not exactly the
 // shape asked for: every question answered with its own type, a choice one that was
-// offered, every number a probability.
+// offered, every number a probability, a choice's probabilities a distribution over its options.
 export function parseAnswers(body, questions) {
   if (!isObject(body) || !isObject(body.answers) || !isObject(body.usage)) return undefined
   if (!Number.isSafeInteger(body.usage.input_tokens) || body.usage.input_tokens < 0) return undefined
@@ -40,6 +42,10 @@ export function parseAnswers(body, questions) {
     const probabilities = answer.probabilities
     if (typeof answer.choice !== 'string' || !options.includes(answer.choice)) return undefined
     if (!isObject(probabilities) || Object.entries(probabilities).some(([option, p]) => !options.includes(option) || !isProbability(p))) return undefined
+    // A distribution: every offered option has a probability and they sum to 1, within
+    // PROBABILITY_SLACK for rounding.
+    if (options.some(option => !Object.hasOwn(probabilities, option))) return undefined
+    if (Math.abs(options.reduce((sum, option) => sum + probabilities[option], 0) - 1) > PROBABILITY_SLACK) return undefined
     if (answer.confidence !== undefined && answer.confidence !== null && !isProbability(answer.confidence)) return undefined
     answers[id] = { type: 'choice', choice: answer.choice, probabilities: { ...probabilities }, ...(isProbability(answer.confidence) ? { confidence: answer.confidence } : {}) }
   }
