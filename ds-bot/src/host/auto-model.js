@@ -53,7 +53,13 @@ export function install(rt) {
     if (status !== 'idle' || !rewake.delete(agent?.id)) return
     // After the loop has left its turn, as images.js does on idle.
     setImmediate(() => {
-      try { rt.wakeInput(agent) } catch (error) { rt.warn('ds-bot: %s kept its input after a model pick but was not woken: %s', rt.botOf(rt.chatOwners.get(agent.id))?.name ?? agent.id, error?.message ?? error) }
+      try {
+        rt.wakeInput(agent)
+        if (state.switching?.[agent.id] !== undefined) {
+          delete state.switching[agent.id]
+          rt.save().catch(() => {})
+        }
+      } catch (error) { rt.warn('ds-bot: %s kept its input after a model pick but was not woken: %s', rt.botOf(rt.chatOwners.get(agent.id))?.name ?? agent.id, error?.message ?? error) }
     })
   })
 
@@ -168,6 +174,10 @@ export function install(rt) {
     rt.liveOf(agent.id).switched = true
     decided.add(agent.id)
     rewake.add(agent.id)
+    // Saved, so a restart before the wake still wakes the chat (parts.js, heldBack).
+    state.switching ??= {}
+    state.switching[agent.id] = { botId: bot.id }
+    await rt.save().catch(() => {})
     return { kind: 'enter', messages: [] }
   }, { prepend: true })
 }

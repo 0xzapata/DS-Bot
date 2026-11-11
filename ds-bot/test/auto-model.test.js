@@ -228,6 +228,25 @@ test('a confident pick of another model moves the chat before the turn reads its
   assert.doesNotMatch(readFileSync(join(env.home, 'model-audit.jsonl'), 'utf8'), /scheduler/)
 })
 
+test('a restart between the held turn and its wake still answers the held message', async (t) => {
+  await fakeJev(t, choose(PRO, 0.8))
+  const env = await start(t)
+  const message = userMessage('Debug this race in the scheduler')
+  await env.firstStep('b', [message])
+  // The process ends before the held turn's idle wakes the chat: the inbox in the
+  // Session log keeps the message, and the team file says the chat waits for it.
+  await until(() => env.state().switching?.b !== undefined, 'the saved mark')
+  const restarted = await start(t, { saved: env.state() })
+  restarted.agentOf('b').inbox.nextTurn.push(message)
+  await restarted.rt.heldBack()
+  assert.deepEqual(restarted.agentOf('b').sent, [{ id: message.id, target: 'next-turn', wakeup: true }])
+  assert.equal(restarted.state().switching?.b, undefined)
+  // Without a restart the wake on idle clears the mark too.
+  env.status('b', 'idle')
+  await until(() => env.agentOf('b').sent.length === 1, 'the wake')
+  await until(() => env.state().switching?.b === undefined, 'the cleared mark')
+})
+
 test('low confidence, the same model, a failed judgment and a late one all leave the model alone', async (t) => {
   let reply = choose(PRO, AUTO_MIN_CONFIDENCE - 0.01)
   const jev = await fakeJev(t, body => reply(body))
