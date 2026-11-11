@@ -22,6 +22,7 @@ const sandbox = {
         createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }),
         useState: initial => [initial, () => {}],
         useEffect: () => {},
+        useLayoutEffect: () => {},
         useRef: initial => ({ current: initial }),
       },
       'react-dom': {},
@@ -32,7 +33,7 @@ const sandbox = {
   },
 }
 runInNewContext(bundle.outputFiles[0].text, sandbox)
-const { groupModels, ModelChoiceDock, ModelKeyCard, effortRows, effortStops, EffortBar, stepMenuFocus, ModelRows, ModelGroupList, groupOpen, toggledGroup, manualFor } = module.exports
+const { groupModels, ModelChoiceDock, ModelKeyCard, ModelMenu, effortRows, effortStops, EffortBar, stepMenuFocus, ModelRows, ModelGroupList, groupOpen, toggledGroup, manualFor } = module.exports
 
 function nodes(tree, match) {
   if (!tree || typeof tree !== 'object') return []
@@ -344,4 +345,11 @@ test('the Default mark, the tick and the pick stay on the open group\'s rows', (
   assert.equal(nodes(rows[1], node => node.props?.className === 'bt-model-tick')[0].children[0], null)
   rows[1].props.onClick()
   assert.deepEqual(picked, ['official/pro'])
+})
+
+test('a Bot on Auto shows Auto and the model it runs on now; without Auto, its own model', () => {
+  const roster = { models, prefs: {} }
+  const label = bot => nodes(ModelMenu({ bot, roster, actions: { updateBot: () => {} }, run: () => {} }), node => node.props?.className === 'bt-model-name')[0].children.join('')
+  assert.equal(label({ id: 'b', name: 'B', model: 'official/flash', appliedModel: 'official/pro', auto: true }), 'Auto · DeepSeek Pro')
+  assert.equal(label({ id: 'b', name: 'B', model: 'official/flash', appliedModel: 'official/pro' }), 'DeepSeek Flash')
 })

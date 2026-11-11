@@ -7,6 +7,7 @@ import { KeyIcon, MaskedInput } from './secret-card.js'
 import { SPRING_POP, SPRING_SHAPE, SPRING_TAP, spring, stepMenuFocus, useLinger, useViewport, viewBottom } from './motion.js'
 import { hostText, t } from './i18n.js'
 import { isLocalRoute, modelsFor, routeOf } from './agent-routes.js'
+import { Switch } from './bot-settings.js'
 
 const MENU_EXIT_MS = 120
 
@@ -328,7 +329,10 @@ export function useAgentModels(actions) {
 export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu()
   const [reading, readModels] = useAgentModels(actions)
-  const shown = modelOf(bot, roster)
+  // Auto (a saved Bot on DSH models only): the trigger shows the model in use now.
+  const auto = bot.auto === true && onPick === undefined
+  const canAuto = onPick === undefined && actions?.updateBot !== undefined && !isLocalRoute(bot.model ?? bot.appliedModel)
+  const shown = auto ? modelOf({ model: bot.appliedModel ?? bot.model }, roster) : modelOf(bot, roster)
   const current = bot.model ?? bot.appliedModel
   const local = isLocalRoute(current)
   const served = servedOf(roster, current)
@@ -353,7 +357,7 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
   const pick = (ref) => {
     close()
     if (onPick) onPick(ref)
-    else if (ref !== current || !bot.model) void run(actions.updateBot(bot.id, { model: ref }))
+    else if (ref !== current || !bot.model || auto) void run(actions.updateBot(bot.id, { model: ref }))
   }
   const pickEffort = (effort) => {
     if (onPickEffort) onPickEffort(effort)
@@ -369,7 +373,7 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
       'data-missing': shown !== undefined && !shown.served && models.length > 0 ? '' : undefined, onClick: toggle,
     },
     h('span', { className: 'bt-model-copy' },
-      h('span', { className: 'bt-model-name' }, shown?.name ?? t('Choose a model')),
+      h('span', { className: 'bt-model-name' }, auto && shown ? t('Auto · {model}', { model: shown.name }) : shown?.name ?? t('Choose a model')),
       shown ? h('span', { className: 'bt-model-provider' }, shown.served || models.length === 0
         ? (!withEfforts || effortLabel === undefined ? shown.provider : `${shown.provider} · ${effortLabel}`)
         : t('{provider} · not available', { provider: shown.provider })) : null),
@@ -379,10 +383,22 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
         models.length > 0 ? h(ModelRows, { roster: { ...roster, models }, current, onPick: pick, opening })
           : local ? null : h('div', { className: 'bt-model-none' }, t('No models are set up in DeepSeek Harness yet.')),
         reading ? h('div', { className: 'bt-model-none' }, t('Reading models…')) : null),
+      canAuto ? h(AutoRow, { on: auto, notes: Object.keys(roster.prefs?.modelNotes ?? {}).length, jev: roster.prefs?.jev === true && roster.jevKey?.set === true, onChange: on => void run(actions.updateBot(bot.id, { auto: on })) }) : null,
       hasEfforts || manage ? h('div', { className: 'bt-model-foot' },
         hasEfforts ? h(EffortBar, { reasoning, current: picked, onPick: pickEffort }) : null,
         hasEfforts && manage ? h('div', { className: 'bt-menu-sep', role: 'separator' }) : null,
         manage ? h('button', { type: 'button', role: 'menuitem', onClick: () => { close(); manage() } }, h(SlidersIcon), h('span', { className: 'bt-menu-label' }, t('Models and providers…'))) : null) : null), document.body) : null)
+}
+
+// Auto at the top of the menu: Jev picks among the models with a note, per message.
+// It says why it cannot pick yet, but stays a switch the user can set ahead.
+function AutoRow({ on, notes, jev, onChange }) {
+  const why = !jev ? t('Turn on quick judgments in Settings > General first.')
+    : notes < 2 ? t('Write a "when to use it" note for two or more models in Settings > Usage.')
+      : t('Picks a model for each message you send here. Picking a model turns it off.')
+  return h('div', { className: 'bt-model-auto' },
+    h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Auto')), h('span', { className: 'bt-set-hint' }, why)),
+    h(Switch, { label: t('Auto'), on, onChange }))
 }
 
 // The card a Bot's chat opens on while the Bot has no model, or has one that is no
@@ -530,6 +546,8 @@ export const MODEL_CSS = `
 .bt-model-menu:not(.bt-folder-menu){padding:0;overflow:hidden;display:flex;flex-direction:column;gap:0}
 .bt-model-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain;padding:6px;display:flex;flex-direction:column;gap:2px}
 .bt-model-foot{flex:none;display:flex;flex-direction:column;gap:2px;padding:4px 6px 6px;border-top:.5px solid var(--bt-line-2)}
+.bt-model-auto{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:.5px solid var(--bt-line-2)}
+.bt-model-auto .bt-set-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
 .bt-effort-bar{display:flex;flex-direction:column;gap:6px;padding:4px 6px 5px}
 .bt-effort-head{display:flex;align-items:center;justify-content:space-between;gap:8px;height:18px;padding:0 2px}
 .bt-effort-label{font-size:11px;line-height:14px;font-weight:500;color:var(--bt-ink-3)}

@@ -766,6 +766,22 @@ var ZH = {
   Member: "成员",
   "Held by": "担任者",
   "price not set": "未设置价格",
+  // Quick judgments (TypeSafe Jev) and Auto model
+  "Quick judgments": "快速判断",
+  "Use Jev for quick judgments": "用 Jev 做快速判断",
+  "When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.": "开启后，你的部分消息会发送给 TypeSafe，用于为设为“自动”的 Bot 选择模型。",
+  "TypeSafe API key": "TypeSafe API 密钥",
+  "A key is set.": "已设置密钥。",
+  "No key yet. You can also set TYPESAFE_API_KEY.": "还没有密钥。也可以设置环境变量 TYPESAFE_API_KEY。",
+  Auto: "自动",
+  "Auto · {model}": "自动 · {model}",
+  "Turn on quick judgments in Settings > General first.": "请先在 设置 > 通用 中开启快速判断。",
+  'Write a "when to use it" note for two or more models in Settings > Usage.': "请在 设置 > 用量 中为至少两个模型写下“何时使用”说明。",
+  "Picks a model for each message you send here. Picking a model turns it off.": "为你在这里发的每条消息选择模型。手动选择模型会关闭它。",
+  "When to use it": "何时使用",
+  "Bots set to Auto pick among models with a note": "设为“自动”的 Bot 在有说明的模型中选择",
+  Note: "说明",
+  "For example: hard code and long analysis": "例如：难的代码和长篇分析",
   Cost: "费用",
   Price: "价格",
   "{currency} per million tokens": "{currency} / 百万 tokens",
@@ -2209,6 +2225,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     // Model providers and their API keys; DSH keeps them, and a key only travels to the host.
     providers: () => call2("providers"),
     setProviderKey: (provider, value) => after(call2("provider-key", { provider, value })),
+    setJevKey: (value) => after(call2("jev-key", { value })),
     addProvider: (body) => after(call2("provider-add", body)),
     providerModels: (body) => call2("provider-models", body),
     removeProvider: (provider) => after(call2("provider-remove", { provider })),
@@ -9731,7 +9748,9 @@ function useAgentModels(actions) {
 function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPickEffort, withEfforts = true }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu();
   const [reading, readModels] = useAgentModels(actions);
-  const shown = modelOf(bot, roster);
+  const auto = bot.auto === true && onPick === void 0;
+  const canAuto = onPick === void 0 && actions?.updateBot !== void 0 && !isLocalRoute(bot.model ?? bot.appliedModel);
+  const shown = auto ? modelOf({ model: bot.appliedModel ?? bot.model }, roster) : modelOf(bot, roster);
   const current = bot.model ?? bot.appliedModel;
   const local = isLocalRoute(current);
   const served = servedOf(roster, current);
@@ -9753,7 +9772,7 @@ function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPi
   const pick2 = (ref) => {
     close();
     if (onPick) onPick(ref);
-    else if (ref !== current || !bot.model) void run2(actions.updateBot(bot.id, { model: ref }));
+    else if (ref !== current || !bot.model || auto) void run2(actions.updateBot(bot.id, { model: ref }));
   };
   const pickEffort = (effort) => {
     if (onPickEffort) onPickEffort(effort);
@@ -9781,7 +9800,7 @@ function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPi
       (0, import_react19.createElement)(
         "span",
         { className: "bt-model-copy" },
-        (0, import_react19.createElement)("span", { className: "bt-model-name" }, shown?.name ?? t("Choose a model")),
+        (0, import_react19.createElement)("span", { className: "bt-model-name" }, auto && shown ? t("Auto · {model}", { model: shown.name }) : shown?.name ?? t("Choose a model")),
         shown ? (0, import_react19.createElement)("span", { className: "bt-model-provider" }, shown.served || models.length === 0 ? !withEfforts || effortLabel === void 0 ? shown.provider : `${shown.provider} · ${effortLabel}` : t("{provider} · not available", { provider: shown.provider })) : null
       ),
       (0, import_react19.createElement)(Caret)
@@ -9795,6 +9814,7 @@ function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPi
         models.length > 0 ? (0, import_react19.createElement)(ModelRows, { roster: { ...roster, models }, current, onPick: pick2, opening }) : local ? null : (0, import_react19.createElement)("div", { className: "bt-model-none" }, t("No models are set up in DeepSeek Harness yet.")),
         reading ? (0, import_react19.createElement)("div", { className: "bt-model-none" }, t("Reading models…")) : null
       ),
+      canAuto ? (0, import_react19.createElement)(AutoRow, { on: auto, notes: Object.keys(roster.prefs?.modelNotes ?? {}).length, jev: roster.prefs?.jev === true && roster.jevKey?.set === true, onChange: (on) => void run2(actions.updateBot(bot.id, { auto: on })) }) : null,
       hasEfforts || manage ? (0, import_react19.createElement)(
         "div",
         { className: "bt-model-foot" },
@@ -9806,6 +9826,15 @@ function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPi
         } }, (0, import_react19.createElement)(SlidersIcon), (0, import_react19.createElement)("span", { className: "bt-menu-label" }, t("Models and providers…"))) : null
       ) : null
     ), document.body) : null
+  );
+}
+function AutoRow({ on, notes, jev, onChange }) {
+  const why = !jev ? t("Turn on quick judgments in Settings > General first.") : notes < 2 ? t('Write a "when to use it" note for two or more models in Settings > Usage.') : t("Picks a model for each message you send here. Picking a model turns it off.");
+  return (0, import_react19.createElement)(
+    "div",
+    { className: "bt-model-auto" },
+    (0, import_react19.createElement)("span", { className: "bt-set-copy" }, (0, import_react19.createElement)("span", { className: "bt-bs-label" }, t("Auto")), (0, import_react19.createElement)("span", { className: "bt-set-hint" }, why)),
+    (0, import_react19.createElement)(Switch, { label: t("Auto"), on, onChange })
   );
 }
 function ModelChoiceDock({ sessionId, useRoster, actions }) {
@@ -9957,6 +9986,8 @@ var MODEL_CSS = `
 .bt-model-menu:not(.bt-folder-menu){padding:0;overflow:hidden;display:flex;flex-direction:column;gap:0}
 .bt-model-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain;padding:6px;display:flex;flex-direction:column;gap:2px}
 .bt-model-foot{flex:none;display:flex;flex-direction:column;gap:2px;padding:4px 6px 6px;border-top:.5px solid var(--bt-line-2)}
+.bt-model-auto{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:.5px solid var(--bt-line-2)}
+.bt-model-auto .bt-set-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
 .bt-effort-bar{display:flex;flex-direction:column;gap:6px;padding:4px 6px 5px}
 .bt-effort-head{display:flex;align-items:center;justify-content:space-between;gap:8px;height:18px;padding:0 2px}
 .bt-effort-label{font-size:11px;line-height:14px;font-weight:500;color:var(--bt-ink-3)}
@@ -17573,7 +17604,7 @@ function ownerFace(owner, roster) {
   return { kind: "other", name: t("Other"), sub: "", paint: "var(--bt-us-rest)", glyph: (size) => glyphBox(size, ChatsIcon) };
 }
 function kindLabel(kind, botFocus) {
-  const labels = { chat: botFocus ? t("Own chat") : t("Conversations"), group: t("Group chats"), compaction: t("Compaction and handoff"), steward: t("Context steward"), handoff: t("Handoff notes"), checkpoint: t("Checkpoints"), image: t("Image reading"), "memory-review": t("Memory review"), "session-title": t("Titles"), btw: t("Side chat"), side: t("Side chat"), other: t("Other") };
+  const labels = { chat: botFocus ? t("Own chat") : t("Conversations"), group: t("Group chats"), compaction: t("Compaction and handoff"), steward: t("Context steward"), handoff: t("Handoff notes"), checkpoint: t("Checkpoints"), image: t("Image reading"), "memory-review": t("Memory review"), "session-title": t("Titles"), judgment: t("Quick judgments"), btw: t("Side chat"), side: t("Side chat"), other: t("Other") };
   return labels[kind] ?? kind;
 }
 function Tabs({ label, value, options, onChange, boxRef }) {
@@ -17758,6 +17789,39 @@ function PriceCard({ model, currency, actions, index }) {
       )
     ),
     note ? (0, import_react39.createElement)("p", { className: "bt-error", role: "alert" }, note) : null
+  );
+}
+function NoteCard({ model, note, actions, index }) {
+  const [draft, setDraft] = (0, import_react39.useState)(note);
+  const [error, setError] = (0, import_react39.useState)("");
+  (0, import_react39.useEffect)(() => {
+    setDraft(note);
+  }, [model.key, note]);
+  const save = (text) => {
+    setError("");
+    void actions.setPrefs({ modelNotes: { [model.key]: text } }).catch((failure) => setError(failure?.message ?? String(failure)));
+  };
+  return (0, import_react39.createElement)(
+    "section",
+    { className: "bt-us-card bt-us-price", style: { "--i": index } },
+    (0, import_react39.createElement)("div", { className: "bt-us-card-head" }, (0, import_react39.createElement)("h3", null, t("When to use it"), (0, import_react39.createElement)("span", null, t("Bots set to Auto pick among models with a note")))),
+    (0, import_react39.createElement)(
+      "div",
+      { className: "bt-us-price-row" },
+      (0, import_react39.createElement)(
+        "label",
+        { className: "bt-field" },
+        (0, import_react39.createElement)("span", null, t("Note")),
+        (0, import_react39.createElement)("input", { className: "bt-input", value: draft, maxLength: 300, placeholder: t("For example: hard code and long analysis"), onChange: (event) => setDraft(event.target.value) })
+      ),
+      (0, import_react39.createElement)(
+        "div",
+        { className: "bt-us-price-go" },
+        note ? (0, import_react39.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => save(null) }, t("Clear")) : null,
+        (0, import_react39.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: draft.trim() === note, onClick: () => save(draft) }, t("Save"))
+      )
+    ),
+    error ? (0, import_react39.createElement)("p", { className: "bt-error", role: "alert" }, error) : null
   );
 }
 function ListCard({ title, count, index, children }) {
@@ -17984,6 +18048,7 @@ function Skeleton2() {
 }
 var focusOf = (id) => typeof id !== "string" ? null : id.startsWith("model:") ? { kind: "model", key: id.slice("model:".length) } : id.startsWith("owner:") ? { kind: "owner", key: id.slice("owner:".length) } : null;
 function UsagePage({ roster, actions: shared2, focusId }) {
+  const notes = roster.prefs?.modelNotes;
   const [view, setView] = (0, import_react39.useState)(null);
   const [error, setError] = (0, import_react39.useState)("");
   const [rangeId, setRangeId] = (0, import_react39.useState)("7d");
@@ -18179,6 +18244,7 @@ function UsagePage({ roster, actions: shared2, focusId }) {
           )
         ),
         shaped.modelAt >= 0 ? (0, import_react39.createElement)(PriceCard, { key: "price", model: view.models[shaped.modelAt], currency, actions, index: 4 }) : groupCard(4),
+        shaped.modelAt >= 0 && view.models[shaped.modelAt].provider !== "typesafe" && !isLocalRoute(view.models[shaped.modelAt].key) ? (0, import_react39.createElement)(NoteCard, { key: "note", model: view.models[shaped.modelAt], note: notes?.[view.models[shaped.modelAt].key] ?? "", actions, index: 4 }) : null,
         (0, import_react39.createElement)(Heat, { key: "heat", view, keep, paint: face.paint, index: 4 })
       )
     ];
@@ -21985,6 +22051,20 @@ function GeneralPage({ roster, actions, run: run2, dsh }) {
     ),
     (0, import_react47.createElement)(
       SetSection,
+      { key: "jev", title: t("Quick judgments") },
+      (0, import_react47.createElement)(
+        SetRow,
+        { label: t("Use Jev for quick judgments"), hint: t("When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.") },
+        (0, import_react47.createElement)(Switch, { label: t("Use Jev for quick judgments"), on: prefs.jev === true, onChange: (jev) => run2(actions.setPrefs({ jev })) })
+      ),
+      (0, import_react47.createElement)(
+        SetRow,
+        { label: t("TypeSafe API key"), hint: roster.jevKey?.set ? t("A key is set.") : t("No key yet. You can also set TYPESAFE_API_KEY.") },
+        (0, import_react47.createElement)(JevKey, { set: roster.jevKey?.set === true, writable: roster.jevKey?.writable === true, actions, run: run2 })
+      )
+    ),
+    (0, import_react47.createElement)(
+      SetSection,
       { key: "memory", title: t("Memory") },
       (0, import_react47.createElement)(
         SetRow,
@@ -22006,6 +22086,21 @@ function GeneralPage({ roster, actions, run: run2, dsh }) {
     (0, import_react47.createElement)(LocationsSection, { key: "places", actions, run: run2 }),
     more.length > 0 ? (0, import_react47.createElement)(SetSection, { key: "more", title: t("More"), className: "bt-dsh-items" }, more.map((id) => dshItem(dsh, id))) : null
   ];
+}
+function JevKey({ set, writable, actions, run: run2 }) {
+  const [draft, setDraft] = (0, import_react47.useState)("");
+  if (!writable && set) return null;
+  const save = () => {
+    if (draft.trim() === "") return;
+    void run2(actions.setJevKey(draft)).then(() => setDraft(""));
+  };
+  return (0, import_react47.createElement)(
+    import_react47.Fragment,
+    null,
+    (0, import_react47.createElement)(MaskedInput, { value: draft, onChange: setDraft, onEnter: save, label: t("Paste or type the key"), disabled: !writable }),
+    (0, import_react47.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: !writable || draft.trim() === "", onClick: save }, t("Save")),
+    set ? (0, import_react47.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: !writable, onClick: () => run2(actions.setJevKey(null)) }, t("Remove")) : null
+  );
 }
 function LocationsSection({ actions, run: run2 }) {
   const app = globalThis.dsBotApp;

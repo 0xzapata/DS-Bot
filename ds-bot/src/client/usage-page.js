@@ -5,6 +5,7 @@ import { BotAvatar, BotMark, RoomAvatar } from './mark.js'
 import { CalendarIcon, ChatsIcon, ChevronLeftIcon, ChevronRightIcon } from './icons.js'
 import { reducedMotion, useGlide } from './motion.js'
 import { dateLocale, t } from './i18n.js'
+import { isLocalRoute } from './agent-routes.js'
 import { DAY_MS, HOUR, HOUR_MS, MODEL, OWNER, RANGES, compact, dayKey, hourMs, moneyOf, mondayOf, percent, spanRange, summarize, tokensOf } from './usage-data.js'
 
 // Usage page: the host's ledger as hourly rows, summed here by hour, day, week, or
@@ -144,7 +145,7 @@ function ownerFace(owner, roster) {
 }
 
 function kindLabel(kind, botFocus) {
-  const labels = { chat: botFocus ? t('Own chat') : t('Conversations'), group: t('Group chats'), compaction: t('Compaction and handoff'), steward: t('Context steward'), handoff: t('Handoff notes'), checkpoint: t('Checkpoints'), image: t('Image reading'), 'memory-review': t('Memory review'), 'session-title': t('Titles'), btw: t('Side chat'), side: t('Side chat'), other: t('Other') }
+  const labels = { chat: botFocus ? t('Own chat') : t('Conversations'), group: t('Group chats'), compaction: t('Compaction and handoff'), steward: t('Context steward'), handoff: t('Handoff notes'), checkpoint: t('Checkpoints'), image: t('Image reading'), 'memory-review': t('Memory review'), 'session-title': t('Titles'), judgment: t('Quick judgments'), btw: t('Side chat'), side: t('Side chat'), other: t('Other') }
   return labels[kind] ?? kind
 }
 
@@ -263,6 +264,27 @@ function PriceCard({ model, currency, actions, index }) {
         model.price ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => save(null) }, t('Clear')) : null,
         h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !valid, onClick: () => save(numbers) }, t('Save')))),
     note ? h('p', { className: 'bt-error', role: 'alert' }, note) : null)
+}
+
+// When Auto should pick this model, in one line. A note puts the model on Auto's list;
+// an empty one takes it off.
+function NoteCard({ model, note, actions, index }) {
+  const [draft, setDraft] = useState(note)
+  const [error, setError] = useState('')
+  useEffect(() => { setDraft(note) }, [model.key, note])
+  const save = (text) => {
+    setError('')
+    void actions.setPrefs({ modelNotes: { [model.key]: text } }).catch(failure => setError(failure?.message ?? String(failure)))
+  }
+  return h('section', { className: 'bt-us-card bt-us-price', style: { '--i': index } },
+    h('div', { className: 'bt-us-card-head' }, h('h3', null, t('When to use it'), h('span', null, t('Bots set to Auto pick among models with a note')))),
+    h('div', { className: 'bt-us-price-row' },
+      h('label', { className: 'bt-field' }, h('span', null, t('Note')),
+        h('input', { className: 'bt-input', value: draft, maxLength: 300, placeholder: t('For example: hard code and long analysis'), onChange: event => setDraft(event.target.value) })),
+      h('div', { className: 'bt-us-price-go' },
+        note ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => save(null) }, t('Clear')) : null,
+        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: draft.trim() === note, onClick: () => save(draft) }, t('Save')))),
+    error ? h('p', { className: 'bt-error', role: 'alert' }, error) : null)
 }
 
 function ListCard({ title, count, index, children }) {
@@ -435,6 +457,7 @@ const focusOf = id => (typeof id !== 'string' ? null
   : null)
 
 export function UsagePage({ roster, actions: shared, focusId }) {
+  const notes = roster.prefs?.modelNotes
   const [view, setView] = useState(null)
   const [error, setError] = useState('')
   const [rangeId, setRangeId] = useState('7d')
@@ -611,6 +634,7 @@ export function UsagePage({ roster, actions: shared, focusId }) {
               ? kinds.map(([at, sum], index) => h(Row, { key: at, name: kindLabel(view.kinds[at], ownerAt >= 0 && isBot(ownerAt)), sum, whole, index, currency, fill: soften(face.paint, 0.8) }))
               : nothing)),
         shaped.modelAt >= 0 ? h(PriceCard, { key: 'price', model: view.models[shaped.modelAt], currency, actions, index: 4 }) : groupCard(4),
+        shaped.modelAt >= 0 && view.models[shaped.modelAt].provider !== 'typesafe' && !isLocalRoute(view.models[shaped.modelAt].key) ? h(NoteCard, { key: 'note', model: view.models[shaped.modelAt], note: notes?.[view.models[shaped.modelAt].key] ?? '', actions, index: 4 }) : null,
         h(Heat, { key: 'heat', view, keep, paint: face.paint, index: 4 })),
     ]
   } else {

@@ -1,4 +1,4 @@
-import { Component, createElement as h, useCallback, useEffect, useRef, useState } from 'react'
+import { Component, createElement as h, Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { ACCENT_INKS, INKS } from './inks.js'
 import { isMainOf } from './sources.js'
 import { MESSAGE_WIDTH, allThemes, flatWidthOf, layoutOf, thinkingShown, widthOf } from './themes.js'
@@ -11,7 +11,7 @@ import { Segmented, useGlide } from './motion.js'
 import { GroupSettingsForm, NewGroupForm } from './group-settings.js'
 import { CreateBot } from './create-bot.js'
 import { KeptPrivateSection } from './kept-private.js'
-import { KeyIcon, SecretsPage } from './secret-card.js'
+import { KeyIcon, MaskedInput, SecretsPage } from './secret-card.js'
 import { UsagePage } from './usage-page.js'
 import { ConnectorsPage } from './connectors-page.js'
 import { ImPage } from './im-page.js'
@@ -172,6 +172,11 @@ function GeneralPage({ roster, actions, run, dsh }) {
     h(SetSection, { key: 'input', title: t('Input') },
       h(SetRow, { label: t('Enter sends message') },
         h(Switch, { label: t('Enter sends message'), on: prefs.enterToSend !== false, onChange: enterToSend => run(actions.setPrefs({ enterToSend })) }))),
+    h(SetSection, { key: 'jev', title: t('Quick judgments') },
+      h(SetRow, { label: t('Use Jev for quick judgments'), hint: t('When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.') },
+        h(Switch, { label: t('Use Jev for quick judgments'), on: prefs.jev === true, onChange: jev => run(actions.setPrefs({ jev })) })),
+      h(SetRow, { label: t('TypeSafe API key'), hint: roster.jevKey?.set ? t('A key is set.') : t('No key yet. You can also set TYPESAFE_API_KEY.') },
+        h(JevKey, { set: roster.jevKey?.set === true, writable: roster.jevKey?.writable === true, actions, run }))),
     h(SetSection, { key: 'memory', title: t('Memory') },
       h(SetRow, { label: t('Bring up related memory') },
         h(Switch, { label: t('Bring up related memory'), on: prefs.memoryAutoRecall !== false, onChange: memoryAutoRecall => run(actions.setPrefs({ memoryAutoRecall })) })),
@@ -185,6 +190,20 @@ function GeneralPage({ roster, actions, run, dsh }) {
     h(LocationsSection, { key: 'places', actions, run }),
     more.length > 0 ? h(SetSection, { key: 'more', title: t('More'), className: 'bt-dsh-items' }, more.map(id => dshItem(dsh, id))) : null,
   ]
+}
+
+// The key is only written; the host says whether one is set, never what it is.
+function JevKey({ set, writable, actions, run }) {
+  const [draft, setDraft] = useState('')
+  if (!writable && set) return null
+  const save = () => {
+    if (draft.trim() === '') return
+    void run(actions.setJevKey(draft)).then(() => setDraft(''))
+  }
+  return h(Fragment, null,
+    h(MaskedInput, { value: draft, onChange: setDraft, onEnter: save, label: t('Paste or type the key'), disabled: !writable }),
+    h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !writable || draft.trim() === '', onClick: save }, t('Save')),
+    set ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !writable, onClick: () => run(actions.setJevKey(null)) }, t('Remove')) : null)
 }
 
 // The desktop app's preload hands its window `dsBotApp`; only there does the data location
