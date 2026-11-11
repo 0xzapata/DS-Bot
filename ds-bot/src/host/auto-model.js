@@ -81,11 +81,12 @@ export function install(rt) {
       decided.delete(agent.id)
       for (const message of held.messages) agent.inbox.remove(message.id)
       keep(agent, held.messages)
-      if (sameSelection(agent.model.current(), held.pick) && held.bot.appliedModel === held.pickRef && rt.botOf(held.bot.id)?.auto === true) {
+      const bot = rt.botOf(held.botId)
+      if (sameSelection(agent.model.current(), held.pick) && bot?.auto === true && bot.appliedModel === held.pickRef) {
         agent.model.select(held.before)
-        held.bot.appliedModel = held.appliedModel
-        if (held.appliedEffort === undefined) delete held.bot.appliedEffort
-        else held.bot.appliedEffort = held.appliedEffort
+        bot.appliedModel = held.appliedModel
+        if (held.appliedEffort === undefined) delete bot.appliedEffort
+        else bot.appliedEffort = held.appliedEffort
       }
       dropMark(agent.id)
       rt.save().catch(() => {})
@@ -248,10 +249,14 @@ export function install(rt) {
       // The step was read on the old model, so it ends before any model call (turns.js
       // reads it as a switch); once the Session is idle the held input wakes it again,
       // and that turn runs on the pick.
-      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, bot, appliedModel: bot.appliedModel, appliedEffort: bot.appliedEffort })
-      bot.appliedModel = verdict.pick
-      if (verdict.effort === undefined) delete bot.appliedEffort
-      else bot.appliedEffort = verdict.effort
+      // The live record: the store can replace it (adopt) while the pick waits.
+      const live = rt.botOf(botId)
+      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, botId, appliedModel: live?.appliedModel, appliedEffort: live?.appliedEffort })
+      if (live !== undefined) {
+        live.appliedModel = verdict.pick
+        if (verdict.effort === undefined) delete live.appliedEffort
+        else live.appliedEffort = verdict.effort
+      }
       rt.liveOf(agent.id).switched = true
       decided.set(agent.id, messages)
       // Saved, so a restart before the wake still wakes the chat (parts.js, heldBack).

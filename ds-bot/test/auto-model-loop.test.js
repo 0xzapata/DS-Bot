@@ -374,6 +374,26 @@ test('the Bot model set to the pick after the hold, then a Stop: the owner\'s mo
   assert.deepEqual([env.model(), env.bot.appliedModel, env.bot.model], ['pro', pro, pro])
 })
 
+// G2: the picker writes to the Bot record as it is at each write (a store adopt() replaces it).
+test('the Bot record replaced during the judgment: the live record follows the pick', async (t) => {
+  const env = await bootAt(t, ['decide', 1], () => env.bots.set('b', { ...env.bot }))
+  env.agent.followup(userMessage('first'))
+  await env.quiet()
+  assert.equal(env.model(), 'pro')
+  assert.equal(env.rt.botOf('b').appliedModel, `${PROVIDER}/pro`)
+})
+
+test('the Bot record replaced after the hold, then a Stop: the live record goes back too', async (t) => {
+  const env = await bootAt(t, ['save', 1], (agent) => {
+    env.bots.set('b', { ...env.bot })
+    agent.cancel({ kind: 'user' }, { keepInbox: true })
+  })
+  env.agent.followup(userMessage('first'))
+  await env.quiet()
+  assert.equal(env.model(), 'flash')
+  assert.equal(env.rt.botOf('b').appliedModel, `${PROVIDER}/flash`)
+})
+
 // Every point of the pick in turn, so an await added to it later is covered too.
 test('a steer, a followup or a Stop at each point of the pick keeps every message once and in order', async (t) => {
   const points = await pointsOf(t)
