@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { ANCHOR_LINE_MAX, HISTORY_PAGE, HISTORY_PAGES_MAX, HISTORY_TIMEOUT_MS, OWN_CHAT_BRIEF, OWN_CHAT_LINE_MAX, OWN_CHAT_READ, OWN_CHAT_SEARCH } from './constants.js'
 import { excerpt } from './text.js'
 
-const INDEX_VERSION = 3
+const INDEX_VERSION = 4
 const AROUND_LINES = 6
 const SEARCH_TERMS_MAX = 6
 const ANY_TERM_HITS = 50
@@ -22,7 +22,7 @@ const SEAL_AFTER_MS = 60_000
 
 const likeOf = term => `%${term.replace(/[\\%_]/g, char => `\\${char}`)}%`
 // Each term is a quoted FTS5 phrase when trigrams can match it, else a LIKE filter.
-export function termQuery(terms, sessions, limit, hidden) {
+export function termQuery(terms, sessions, limit, hidden, hiddenTurns = {}) {
   const long = terms.filter(term => [...term].length >= 3)
   const short = terms.filter(term => [...term].length < 3)
   const where = ['session IN (SELECT value FROM json_each(?))']
@@ -30,6 +30,11 @@ export function termQuery(terms, sessions, limit, hidden) {
   if (hidden !== undefined) {
     where.push('NOT (session = ? AND seq >= ?)')
     args.push(hidden.session, hidden.from)
+  }
+  for (const [session, turns] of Object.entries(hiddenTurns)) {
+    if (turns.length === 0) continue
+    where.push('NOT (session = ? AND turn IN (SELECT value FROM json_each(?)))')
+    args.push(session, JSON.stringify(turns))
   }
   if (long.length > 0) {
     where.unshift('lines MATCH ?')
@@ -107,15 +112,15 @@ export function install(rt) {
         db.exec(`
           DROP TABLE IF EXISTS lines;
           DROP TABLE IF EXISTS marks;
-          CREATE VIRTUAL TABLE lines USING fts5(text, session UNINDEXED, seq UNINDEXED, time UNINDEXED, who UNINDEXED, tokenize = 'trigram');
-          CREATE TABLE marks (session TEXT PRIMARY KEY, through INTEGER NOT NULL, keep INTEGER NOT NULL, sealed INTEGER NOT NULL, turn INTEGER NOT NULL);
+          CREATE VIRTUAL TABLE lines USING fts5(text, session UNINDEXED, seq UNINDEXED, time UNINDEXED, who UNINDEXED, turn UNINDEXED, tokenize = 'trigram');
+          CREATE TABLE marks (session TEXT PRIMARY KEY, through INTEGER NOT NULL, keep INTEGER NOT NULL, sealed INTEGER NOT NULL, turn INTEGER NOT NULL, number INTEGER NOT NULL);
           PRAGMA user_version = ${INDEX_VERSION};`)
       }
       return {
         db,
-        mark: db.prepare('SELECT through, keep, sealed, turn FROM marks WHERE session = ?'),
-        setMark: db.prepare('INSERT OR REPLACE INTO marks (session, through, keep, sealed, turn) VALUES (?, ?, ?, ?, ?)'),
-        insert: db.prepare('INSERT INTO lines (text, session, seq, time, who) VALUES (?, ?, ?, ?, ?)'),
+        mark: db.prepare('SELECT through, keep, sealed, turn, number FROM marks WHERE session = ?'),
+        setMark: db.prepare('INSERT OR REPLACE INTO marks (session, through, keep, sealed, turn, number) VALUES (?, ?, ?, ?, ?, ?)'),
+        insert: db.prepare('INSERT INTO lines (text, session, seq, time, who, turn) VALUES (?, ?, ?, ?, ?, ?)'),
         before: db.prepare('SELECT text, session, seq, time, who FROM lines WHERE session = ? AND seq < ? ORDER BY seq DESC LIMIT ?'),
         from: db.prepare('SELECT text, session, seq, time, who FROM lines WHERE session = ? AND seq >= ? ORDER BY seq LIMIT ?'),
       }
@@ -129,6 +134,31 @@ export function install(rt) {
     chatIndex = undefined
     indexOpening = undefined
   }, 'ds-bot: chat index')
+
+  // What events say, as lines, each with the number of the turn it came in: the one
+  // reading behind the index and the log scan. `turn` is the seq of the latest turn/start
+  // (what the asking turn is cut by); `number` is that turn's number, which the chat's
+  // hidden turns (`exchangeTurns`) are listed by.
+  function readLines(events, from = {}) {
+    let { keep = false, turn = -1, number = -1 } = from
+    const rows = []
+    for (const event of events) {
+      if (event.type === 'turn/start') {
+        turn = event.seq
+        if (Number.isInteger(event.data?.turn)) number = event.data.turn
+      }
+      const entry = rt.historyEntry(event, false)
+      if (entry === undefined) continue
+      const at = Number.isInteger(event.data?.turn) ? event.data.turn : number
+      if (entry.answer) {
+        if (keep) rows.push({ text: entry.text, seq: event.seq, time: event.time ?? 0, who: 'you', turn: at })
+        continue
+      }
+      keep = entry.keepAnswers
+      if (entry.text !== '') rows.push({ text: entry.text, seq: event.seq, time: event.time ?? 0, who: entry.who, turn: at })
+    }
+    return { rows, keep, turn, number, last: events.at(-1)?.seq }
+  }
 
   // Adds what a part said since its mark. Reads of one part wait for each other, so no
   // line is added twice.
@@ -148,25 +178,12 @@ export function install(rt) {
       if (events.length > 0 && events.at(-1).seq !== through + 1) throw new Error(`the history of ${part.sessionId} came back with a gap`)
       events.reverse()
       if (index !== chatIndex) return
-      let keep = mark ? mark.keep === 1 : false
-      let turn = mark?.turn ?? -1
       const seal = part.endedAt !== undefined && Date.now() - part.endedAt > SEAL_AFTER_MS
       index.db.exec('BEGIN')
       try {
-        let last = through
-        for (const event of events) {
-          last = event.seq
-          if (event.type === 'turn/start') turn = event.seq
-          const entry = rt.historyEntry(event, false)
-          if (entry === undefined) continue
-          if (entry.answer) {
-            if (keep) index.insert.run(entry.text, part.sessionId, event.seq, event.time ?? 0, 'you')
-            continue
-          }
-          keep = entry.keepAnswers
-          if (entry.text !== '') index.insert.run(entry.text, part.sessionId, event.seq, event.time ?? 0, entry.who)
-        }
-        index.setMark.run(part.sessionId, last, keep ? 1 : 0, seal ? 1 : 0, turn)
+        const read = readLines(events, { keep: mark ? mark.keep === 1 : false, turn: mark?.turn ?? -1, number: mark?.number ?? -1 })
+        for (const row of read.rows) index.insert.run(row.text, part.sessionId, row.seq, row.time, row.who, row.turn)
+        index.setMark.run(part.sessionId, read.last ?? through, read.keep ? 1 : 0, seal ? 1 : 0, read.turn, read.number)
         index.db.exec('COMMIT')
       } catch (error) {
         index.db.exec('ROLLBACK')
@@ -237,19 +254,24 @@ export function install(rt) {
     const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))].slice(0, SEARCH_TERMS_MAX)
     if (terms.join('').length < 2) return []
     const closed = Object.values(rt.state.bots).flatMap(bot => (bot.segments ?? []).filter(segment => segment.closed === true).map(segment => ({ botId: bot.id, ...segment })))
+    // The chat hides the turns of requests from other Bots; a hit there would lead nowhere.
+    const hiddenTurns = Object.fromEntries(closed.map(part => [part.sessionId, rt.state.exchangeTurns[part.sessionId] ?? []]))
     const hit = (part, text) => ({ botId: part.botId, sessionId: part.sessionId, text: excerpt(text.replace(/\s+/g, ' '), terms[0], 120) })
     const index = await openIndex()
     if (index === null) {
       const found = []
       for (const part of closed) {
-        for await (const line of rt.partLines(part.sessionId, AbortSignal.timeout(HISTORY_TIMEOUT_MS))) {
-          if (terms.every(term => line.text.toLowerCase().includes(term))) found.push(hit(part, line.text))
+        const events = []
+        for await (const event of eventsBackwards(part.sessionId, AbortSignal.timeout(HISTORY_TIMEOUT_MS))) events.push(event)
+        for (const row of readLines(events.reverse()).rows.reverse()) {
+          if (hiddenTurns[part.sessionId]?.includes(row.turn)) continue
+          if (terms.every(term => row.text.toLowerCase().includes(term))) found.push(hit(part, row.text))
         }
       }
       return found.slice(0, limit)
     }
     for (const part of closed) await catchUp(index, part).catch(error => rt.warn('ds-bot: indexing %s failed: %s', part.sessionId, error))
-    const { sql, args } = termQuery(terms, closed.map(part => part.sessionId), limit)
+    const { sql, args } = termQuery(terms, closed.map(part => part.sessionId), limit, undefined, hiddenTurns)
     return index.db.prepare(sql).all(...args).map(row => hit(closed.find(part => part.sessionId === row.session), row.text))
   }
 

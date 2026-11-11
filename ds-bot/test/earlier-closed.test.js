@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -13,19 +13,22 @@ import { fakeContext } from './fake-ctx.js'
 // Host: the closed parts are named in the roster and found by 'search-closed'.
 // Client: the Bot's chat offers them (EarlierDock) and the palette lists the hits.
 const said = (seq, text) => ({ seq, time: 1000 + seq, type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind: 'user' } } })
-const TEAM = (segments) => ({
+const TEAM = (segments, exchangeTurns = {}) => ({
   version: 1, mainBotIds: ['chief'],
   bots: {
     chief: { id: 'chief', name: 'Chief', role: 'Lead', sessionId: 'chief', createdAt: 1 },
     writer: { id: 'writer', name: 'Writer', role: 'Write', sessionId: 'writer-now', createdAt: 2, segments },
   },
-  rooms: {}, agents: {}, exchanges: [], exchangeTurns: {}, questions: {}, views: {}, prefs: {}, revision: 0,
+  rooms: {}, agents: {}, exchanges: [], exchangeTurns, questions: {}, views: {}, prefs: {}, revision: 0,
 })
 const PAGES = { 'writer-old': [said(0, 'The zebrafinch draft is ready'), said(1, 'Zebrafinch chapter two')], 'writer-mid': [said(0, 'A plain part switch mentions zebrafinch too')] }
 
-async function start(t, segments) {
+// `noIndex` makes the chat index unopenable (a folder where its file belongs), so the
+// search reads the logs, as it does without SQLite.
+async function start(t, segments, { exchangeTurns, noIndex } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-earlier-closed-'))
-  writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM(segments)))
+  writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM(segments, exchangeTurns)))
+  if (noIndex) mkdirSync(join(home, 'chat-index.sqlite'))
   const ctx = fakeContext()
   const agentOf = sessionId => ({
     id: sessionId, status: 'idle',
@@ -67,6 +70,25 @@ test('search-closed finds text that only a closed part holds, and not an ordinar
   assert.deepEqual((await call('search-closed', { query: 'nothing like it' })).value, [])
   assert.deepEqual((await call('search-closed', { query: 'z' })).value, [])
 })
+
+// A request from a teammate is a hidden exchange turn: the chat shows none of it, nor the
+// Bot's answer to it. Search must offer only what the earlier feed shows.
+const turnStart = (seq, turn) => ({ seq, time: 1000 + seq, type: 'turn/start', data: { turn } })
+const request = (seq, text) => ({ seq, time: 1000 + seq, type: 'user/message', data: { content: [{ type: 'text', text }], source: { kind: 'bot', role: 'request', senderName: 'Chief' } } })
+const answer = (seq, turn, text) => ({ seq, time: 1000 + seq, type: 'assistant/message', data: { turn, message: { content: [{ type: 'text', text }] } } })
+PAGES['writer-hid'] = [
+  turnStart(0, 0), request(1, 'Chief asks: secretkumquat budget'), answer(2, 0, 'The secretkumquat budget is 40'),
+  turnStart(3, 1), said(4, 'A plain secretkumquat note'), answer(5, 1, 'Noted the secretkumquat note'),
+]
+for (const noIndex of [false, true]) {
+  test(`search-closed offers only what the earlier feed shows (${noIndex ? 'reading the logs' : 'chat index'})`, async (t) => {
+    const call = await start(t, [{ sessionId: 'writer-hid', endedAt: 1, fallback: 'clean', closed: true }], { exchangeTurns: { 'writer-hid': [0] }, noIndex })
+    const feed = (await call('earlier', { sessionId: 'writer-now' })).value.items.flatMap(item => (item.kind === 'user' || item.kind === 'bot' ? [item.text] : []))
+    assert.deepEqual(feed, ['A plain secretkumquat note', 'Noted the secretkumquat note'])
+    const hits = (await call('search-closed', { query: 'secretkumquat' })).value.map(hit => hit.text)
+    assert.deepEqual(hits.sort(), [...feed].sort())
+  })
+}
 
 // ---- client -------------------------------------------------------------
 const { outputFiles } = await build({
