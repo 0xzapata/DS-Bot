@@ -50,8 +50,10 @@ export function install(rt) {
   const decided = new Map()
   // A chat whose turn was ended for a pick, waiting to be woken on it.
   const rewake = new Map()
+  // The restart mark is shared with part switching (parts.js, heldBack): the hold sets
+  // its own only where none is, and removes only its own.
   const dropMark = (id) => {
-    if (state.switching?.[id] !== undefined) delete state.switching[id]
+    if (state.switching?.[id]?.pick === true) delete state.switching[id]
   }
   ctx.on('agent/status', ({ agent, status }) => {
     if (status === 'running' && rt.chatOwners.has(agent?.id)) woke.add(agent.id)
@@ -247,7 +249,7 @@ export function install(rt) {
       // Saved, so a restart before the wake still wakes the chat (parts.js, heldBack).
       // Input sent or a Stop from here on is the wake's to order or undo (above).
       state.switching ??= {}
-      state.switching[agent.id] = { botId: bot.id }
+      state.switching[agent.id] ??= { botId: bot.id, pick: true }
       await rt.save().catch(() => {})
       return { kind: 'enter', messages: [] }
     }

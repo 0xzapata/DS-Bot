@@ -250,6 +250,20 @@ test('a restart between the held turn and its wake still answers the held messag
   await until(() => env.state().switching?.b === undefined, 'the cleared mark')
 })
 
+// I1: state.switching is part switching's restart mark too (parts.js, runSwitch).
+test('a pick keeps a part switch\'s restart mark, and its wake leaves the mark there', async (t) => {
+  await fakeJev(t, choose(PRO, 0.8))
+  const saved = team()
+  saved.switching = { b: { botId: 'b' } }
+  const env = await start(t, { saved })
+  const message = userMessage('Debug this race in the scheduler')
+  assert.deepEqual(env.own(await env.firstStep('b', [message])), [])
+  env.status('b', 'idle')
+  await until(() => env.agentOf('b').sent.length === 1, 'the wake')
+  await settle()
+  assert.deepEqual(env.state().switching, { b: { botId: 'b' } })
+})
+
 test('low confidence, the same model, a failed judgment and a late one all leave the model alone', async (t) => {
   let reply = choose(PRO, AUTO_MIN_CONFIDENCE - 0.01)
   const jev = await fakeJev(t, body => reply(body))
