@@ -107,7 +107,10 @@ async function start(t, { saved = team(), windows = {} } = {}) {
         id: sessionId,
         status: 'idle',
         sent: [],
-        session: { id: sessionId, header: { cwd: workspace }, requestHeader: () => undefined, deriveMessages: () => [] },
+        // The owner's messages a Stop kept in the chat, and the Session's own model choice.
+        kept: [],
+        session: { id: sessionId, header: { cwd: workspace }, requestHeader: () => undefined, deriveMessages: () => [], append(type, message) { if (type === 'user/message') agents.get(sessionId).kept.push(message.id) }, snapshotEvents: () => [] },
+        model: { select: ({ provider, model, reasoningEffort }) => selected.push([sessionId, `${provider}/${model}`, ...(reasoningEffort ? [reasoningEffort] : [])]) },
         followup() {}, steer() {}, inject() {}, cancel() {},
         send(message, target, wakeup) { this.sent.push({ id: message.id, target, wakeup }) },
         async whenIdle() {},
@@ -273,20 +276,42 @@ test('low confidence, the same model, a failed judgment and a late one all leave
   assert.equal(jev.length, 4, 'a failed judgment is not remembered: every message asks again')
 })
 
-test('Stop during the judgment changes no model', async (t) => {
-  const jev = await fakeJev(t, body => ({ ...choose(PRO, 0.9)(body), delayMs: 200 }))
+// Jev slower than its 1.5 s budget, as in the live check: the audit still says stopped.
+test('Stop during the judgment changes no model, and the turn ends without waiting for Jev', async (t) => {
+  const jev = await fakeJev(t, body => ({ ...choose(PRO, 0.9)(body), delayMs: 3000 }))
   const env = await start(t)
   const stop = new AbortController()
   setTimeout(() => stop.abort({ kind: 'user' }), 50)
+  const started = Date.now()
   await env.firstStep('b', [userMessage('Debug this race')], { signal: stop.signal })
+  assert.ok(Date.now() - started < 500, `the stopped turn waited ${Date.now() - started} ms`)
   env.status('b', 'idle')
   assert.equal(jev.length, 1)
   assert.deepEqual(env.selected, [])
   assert.equal(env.state().bots.b.appliedModel, FLASH)
   assert.deepEqual(env.agentOf('b').inbox.nextTurn, [])
+  assert.equal(env.agentOf('b').kept.length, 1, 'the message stays in the chat')
   await until(() => env.audit().length === 1, 'the audit line')
   assert.equal(env.audit()[0].applied, false)
   assert.equal(env.audit()[0].reason, 'stopped')
+})
+
+// C: the judgment is a busy moment like any running turn.
+test('/new during the judgment is refused as on any busy Bot', async (t) => {
+  await fakeJev(t, body => ({ ...choose(PRO, 0.9)(body), delayMs: 300 }))
+  const env = await start(t)
+  const step = env.firstStep('b', [userMessage('Debug this race')])
+  await settle()
+  const during = await env.call('bot-new-session', { botId: 'b' })
+  await step
+  env.status('b', 'idle')
+  await until(() => env.agentOf('b').sent.length === 1, 'the wake')
+  // The same refusal as on a Bot whose model call runs.
+  env.status('b', 'running')
+  const busy = await env.call('bot-new-session', { botId: 'b' })
+  assert.equal(during.ok, false)
+  assert.deepEqual(during.error, busy.error)
+  assert.equal(during.error.code, 'bot/busy')
 })
 
 test('input that arrives during the judgment keeps the model, and the audit says why', async (t) => {
