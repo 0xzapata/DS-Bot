@@ -349,6 +349,17 @@ test('the Bot model set in settings during the judgment: later turns stay on it'
   assert.deepEqual([env.model(), env.bot.appliedModel], ['max', max])
 })
 
+// F2: the undo after a Stop reverts only its own pick.
+test('the Bot model set after the hold, then a Stop: the new model stays', async (t) => {
+  const env = await bootOwnerAt(t, ['save', 1], OWNER_CHANGES[3][1], agent => agent.cancel({ kind: 'user' }, { keepInbox: true }))
+  env.agent.followup(userMessage('first'))
+  await env.quiet()
+  assert.deepEqual([env.model(), env.bot.appliedModel], ['max', max])
+  assert.deepEqual(env.history(), ['first'])
+  assert.equal(env.agent.inbox.hasPending, false)
+  assert.equal(env.rt.state.switching?.b, undefined)
+})
+
 // Every point of the pick in turn, so an await added to it later is covered too.
 test('a steer, a followup or a Stop at each point of the pick keeps every message once and in order', async (t) => {
   const points = await pointsOf(t)
@@ -399,5 +410,13 @@ test('a steer, a followup or a Stop at each point of the pick keeps every messag
       assert.equal(env.agent.inbox.hasPending, false, label)
       expect(env, held, label)
     }
+    // The Bot model set, then a Stop at once: the owner's model stands, nothing is lost.
+    const env = await bootOwnerAt(t, point, OWNER_CHANGES[3][1], agent => agent.cancel({ kind: 'user' }, { keepInbox: true }), true)
+    env.agent.followup(userMessage('first'))
+    await env.quiet()
+    const label = `Bot model set + Stop at ${where}: ${JSON.stringify(env.calls)} history ${JSON.stringify(env.history())}`
+    assert.deepEqual([env.model(), env.bot.appliedModel], ['max', max], label)
+    assert.equal(env.agent.inbox.hasPending, false, label)
+    assert.equal(new Set(env.history()).size, env.history().length, label)
   }
 })

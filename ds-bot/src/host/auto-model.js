@@ -75,14 +75,18 @@ export function install(rt) {
     }
     if (held === undefined) return
     rewake.delete(agent.id)
-    // Stopped after the hold returned: the stopped turn changes nothing.
+    // Stopped after the hold returned: the stopped turn changes nothing. A model the owner
+    // set since the hold stands.
     if (held.signal.aborted) {
       decided.delete(agent.id)
-      unhold(agent, held.messages, held.before)
+      for (const message of held.messages) agent.inbox.remove(message.id)
       keep(agent, held.messages)
-      held.bot.appliedModel = held.appliedModel
-      if (held.appliedEffort === undefined) delete held.bot.appliedEffort
-      else held.bot.appliedEffort = held.appliedEffort
+      if (sameSelection(agent.model.current(), held.pick) && held.bot.appliedModel === held.pickRef) {
+        agent.model.select(held.before)
+        held.bot.appliedModel = held.appliedModel
+        if (held.appliedEffort === undefined) delete held.bot.appliedEffort
+        else held.bot.appliedEffort = held.appliedEffort
+      }
       dropMark(agent.id)
       rt.save().catch(() => {})
       return
@@ -161,10 +165,6 @@ export function install(rt) {
     if (last === undefined) return
     agent.inbox.remove(last.id)
     agent.send(last, target, true)
-  }
-  const unhold = (agent, messages, before) => {
-    for (const message of messages) agent.inbox.remove(message.id)
-    agent.model.select(before)
   }
   const sameSelection = (a, b) => a?.provider === b?.provider && a?.model === b?.model && a?.reasoningEffort === b?.reasoningEffort
 
@@ -248,7 +248,7 @@ export function install(rt) {
       // The step was read on the old model, so it ends before any model call (turns.js
       // reads it as a switch); once the Session is idle the held input wakes it again,
       // and that turn runs on the pick.
-      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, bot, appliedModel: bot.appliedModel, appliedEffort: bot.appliedEffort })
+      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, bot, appliedModel: bot.appliedModel, appliedEffort: bot.appliedEffort })
       bot.appliedModel = verdict.pick
       if (verdict.effort === undefined) delete bot.appliedEffort
       else bot.appliedEffort = verdict.effort
