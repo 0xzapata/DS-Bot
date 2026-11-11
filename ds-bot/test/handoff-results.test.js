@@ -680,3 +680,29 @@ test('/new waits while a subagent the Bot delegated to is still out', async (t) 
   await settled(() => callsOf(agents, 'a').length === 1)
   assert.equal((await call('bot-new-session', { botId: 'b' })).ok, true)
 })
+
+test('New session and opening an earlier part wait while a subagent the Bot delegated to is still out', async (t) => {
+  const { start } = bench(t)
+  const first = await start({ ...seed(), bots: { ...seed().bots, b: { ...seed().bots.b, segments: [{ sessionId: 'b0', endedAt: 1, fallback: 'manual' }] } } })
+  const { ctx, emit, emitScoped, call } = first
+  const archived = []
+  ctx.workspaceRegistry.archiveSession = async (sessionId, options) => { archived.push([sessionId, options]) }
+  ctx.workspaceRegistry.unarchiveSession = async () => {}
+  emit('b', 'turn/start', { turn: 1 })
+  emit('b', 'user/message', { content: textBlock('review it in the background'), source: { kind: 'user' } })
+  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emit('b', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  for (const [endpoint, payload] of [['bot-new-part', { botId: 'b' }], ['bot-open-part', { botId: 'b', sessionId: 'b0' }]]) {
+    const refused = await call(endpoint, payload)
+    assert.equal(refused.error?.code, 'bot/busy', `${endpoint}: ${JSON.stringify(refused)}`)
+    assert.equal(refused.error.message, 'A subagent the Bot started is still working; wait for it to finish, then try again')
+  }
+  await delay(20)
+  assert.deepEqual(archived, [])
+  assert.equal((await call('state', {})).value.bots.find(bot => bot.id === 'b').sessionId, 'b')
+  // Once the run is back, the earlier part opens.
+  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed') })
+  assert.equal((await call('bot-open-part', { botId: 'b', sessionId: 'b0' })).ok, true)
+  assert.deepEqual(archived, [['b', { stopActivity: true }]])
+})

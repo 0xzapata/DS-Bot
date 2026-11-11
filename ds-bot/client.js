@@ -1626,7 +1626,7 @@ var HOST_ERRORS = [
 var HOST_ZH = {
   "The chat moved on since you looked; open it again": "对话已经变了，请重新打开",
   "The Bot has queued messages; let it read them first": "Bot 还有排队的消息，请等它先读完",
-  "A subagent the Bot started is still working; wait for it to finish or stop it first": "Bot 启动的子代理还在工作，请等它完成或先停止它",
+  "A subagent the Bot started is still working; wait for it to finish, then try again": "Bot 启动的子代理还在工作，请等它完成后再试",
   "The Bot is waiting for your answer; answer or dismiss it first": "Bot 在等你回答，请先回答或关掉",
   "The new session could not be started; try again": "新会话没能开始，请再试一次",
   "That session was closed by a new session; it stays readable only": "这个会话已被新会话关闭，只能查看",

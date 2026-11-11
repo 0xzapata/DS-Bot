@@ -858,6 +858,11 @@ export function install(rt) {
   const grown = (sessionId, tokens, lines) => tokens >= (partBase.get(sessionId) ?? 0) + lines.check / 4
   // A read-only process (another dsh holds the team) neither condenses nor switches.
   const readOnly = () => rt.readOnly() !== undefined
+  // A subagent run is a child of the part, and archiving the part stops it, so its
+  // result would reach no chat: no switch starts while one is out. An automatic switch
+  // comes again at the next idle or step; a manual one is refused.
+  const subagentOut = sessionId => rt.hasSubagents?.(sessionId) === true
+  const SUBAGENT_OUT = 'A subagent the Bot started is still working; wait for it to finish, then try again'
 
   // Input for an earlier part goes on in the current one: a browser may still show the
   // old part, and a turn stopped for a switch hands on what it claimed.
@@ -959,7 +964,7 @@ export function install(rt) {
   // `engine`: because the Bot now runs on something else (see engineMoved).
   function startSwitch(agent, { resume = false, carry = [], info, joined, overflow = false, failed, bare = false, folder = false, manual = false, clean = false, cutoff = false, engine = false, hard = overflow || folder || manual || clean || engine || cutoff } = {}) {
     const place = placeOf(agent.id)
-    if (place === undefined || switches.has(agent.id) || readOnly()) return undefined
+    if (place === undefined || switches.has(agent.id) || readOnly() || subagentOut(agent.id)) return undefined
     const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, hard, manual, clean, cutoff, since: Date.now() }
     switches.set(agent.id, job)
     // Settles with the job once the switch is over, moved or not; never rejects.
@@ -1287,18 +1292,27 @@ export function install(rt) {
       freshParts.delete(agent.id)
       partBase.set(agent.id, (tokensOf(agent.session) ?? 0) + fresh)
     }
-    if (!readOnly() && await folderMove(agent, { midTurn: payload.step > 1 }) !== undefined) return switchBeforeStep(agent, payload, { folder: true })
+    // ponytail: while a subagent is out the part neither moves nor holds its step (a
+    // hold would wake it again at once), so off its engine it runs on until the run is
+    // back. Upgrade: hold with a retry timer if that matters.
+    const out = subagentOut(agent.id)
+    if (!readOnly() && !out && await folderMove(agent, { midTurn: payload.step > 1 }) !== undefined) return switchBeforeStep(agent, payload, { folder: true })
     // The group's own Session moves only for its folder, never for its size: its turns
     // are synthesized relay calls, so the steward's lines do not apply to it.
     if (place.botId === undefined) return next()
-    if (!readOnly() && engineMoved(agent, place, payload.modelSelection)) return switchBeforeStep(agent, payload, { engine: true })
-    if (offEngine(agent, place, payload.modelSelection)) return holdStep(agent, payload)
+    if (!readOnly() && !out && engineMoved(agent, place, payload.modelSelection)) return switchBeforeStep(agent, payload, { engine: true })
+    if (!out && offEngine(agent, place, payload.modelSelection)) return holdStep(agent, payload)
     // A local agent CLI owns its in-session compaction; the DSH Session keeps the
     // full history for read_own_chat and never condenses or switches on size.
     if (rt.isLocalAgentRef?.(rt.botOf(place.botId)?.model ?? rt.botOf(place.botId)?.appliedModel) === true) return next()
     const lines = await contextLines(agent.session).catch(() => undefined)
     const tokens = tokensOf(agent.session)
     if (lines === undefined || tokens === undefined || tokens < lines.hard || !grown(agent.id, tokens, lines) || readOnly()) return next()
+    // Condensing in place leaves the subagent running; the switch waits for its return.
+    if (out) {
+      if (engineOf(agent) !== undefined) await condense(agent, lines, { inTurn: true, signal: payload.signal })
+      return next()
+    }
     if (await decide(agent, { midTurn: payload.step > 1 }) === 'compact' && await condense(agent, lines, { inTurn: true, signal: payload.signal })) return next()
     if (!await canMakeRoom(agent, payload.messages)) return next()
     return switchBeforeStep(agent, payload, { hard: true })
@@ -1420,7 +1434,7 @@ export function install(rt) {
     if (decided !== undefined || payload.signal?.aborted) return decided
     await rt.load()
     const { agent } = payload
-    if (!rt.isBotSession(agent.id) || switches.has(agent.id) || readOnly() || rescued.get(agent.id) === 'bare') return decided
+    if (!rt.isBotSession(agent.id) || switches.has(agent.id) || readOnly() || subagentOut(agent.id) || rescued.get(agent.id) === 'bare') return decided
     const entry = rt.liveOf(agent.id)
     entry.switched = true
     // The latest messages carried into a rescued part may be what breaks the request.
@@ -1432,7 +1446,7 @@ export function install(rt) {
     if (payload.failure?.code !== OVERFLOW || payload.signal?.aborted) return next()
     await rt.load()
     const { agent } = payload
-    if (!rt.isBotSession(agent.id) || switches.has(agent.id) || readOnly() || !await canMakeRoom(agent)) return next()
+    if (!rt.isBotSession(agent.id) || switches.has(agent.id) || readOnly() || subagentOut(agent.id) || !await canMakeRoom(agent)) return next()
     const entry = rt.liveOf(agent.id)
     entry.switched = true
     startSwitch(agent, { resume: true, info: entry.info, joined: [...(entry.joined ?? [])], overflow: true })
@@ -1443,7 +1457,8 @@ export function install(rt) {
   // the part ends up below the line, and nothing is decided again until it grows
   // past it.
   async function checkContext(agent) {
-    if (switches.has(agent.id) || freshParts.has(agent.id) || checking.has(agent.id) || readOnly()) return
+    // A part whose subagent is out moves at the first idle after the run is back.
+    if (switches.has(agent.id) || freshParts.has(agent.id) || checking.has(agent.id) || readOnly() || subagentOut(agent.id)) return
     // A local agent CLI owns its in-session compaction.
     if (rt.isLocalAgentRef?.(rt.botOf(placeOf(agent.id)?.botId)?.model ?? rt.botOf(placeOf(agent.id)?.botId)?.appliedModel) === true) return
     if (lastTurnEnd(agent)?.data?.reason?.kind === 'error') return
@@ -1724,6 +1739,7 @@ export function install(rt) {
     const place = placeOf(sessionId)
     if (place?.botId === undefined || place.roomId !== undefined) throw Object.assign(new Error('Only a Bot\'s own chat can start a fresh part'), { code: 'bot/invalid' })
     if (agent.status !== 'idle') throw Object.assign(new Error('The Bot is working; wait for it to finish or stop it first'), { code: 'bot/busy' })
+    if (subagentOut(sessionId)) refuse(SUBAGENT_OUT, 'bot/busy')
     startSwitch(agent, { manual: true })
     return true
   }
@@ -1744,9 +1760,8 @@ export function install(rt) {
     if (agent.status !== 'idle' || rt.live.get(sessionId)?.turn !== undefined || switches.has(sessionId)) refuse('The Bot is working; wait for it to finish or stop it first', 'bot/busy')
     if (agent.inbox.nextStep.length > 0 || agent.inbox.nextTurn.length > 0) refuse('The Bot has queued messages; let it read them first', 'bot/busy')
     if (state.questions[sessionId] !== undefined || state.views?.[sessionId] !== undefined || rt.waitsForApproval?.(sessionId) === true) refuse('The Bot is waiting for your answer; answer or dismiss it first', 'bot/busy')
-    // A subagent run belongs to this Session, and archiving it stops the run: its result
-    // would reach no chat. A teammate's reply finds the Bot's new chat by itself.
-    if (rt.hasSubagents?.(sessionId) === true) refuse('A subagent the Bot started is still working; wait for it to finish or stop it first', 'bot/busy')
+    // A teammate's reply finds the Bot's new chat by itself; a subagent run does not.
+    if (subagentOut(sessionId)) refuse(SUBAGENT_OUT, 'bot/busy')
     const job = await startSwitch(agent, { clean: true })
     if (job?.moved !== true) refuse('The new session could not be started; try again', 'bot/refused')
     return { sessionId: rt.chatOf(bot.id), previous: sessionId }
@@ -1781,6 +1796,7 @@ export function install(rt) {
     if (segments[at].closed === true) refuse('That session was closed by a new session; it stays readable only', 'bot/closed')
     const live = rt.live.get(current)
     if (live?.turn !== undefined) throw Object.assign(new Error('The Bot is working; wait for it to finish or stop it first'), { code: 'bot/busy' })
+    if (subagentOut(current)) refuse(SUBAGENT_OUT, 'bot/busy')
     // DSH turns away every step of an archived Session and every task aimed at it, so
     // the part leaves the archive before it becomes current.
     await ctx.workspaceRegistry.unarchiveSession(partId)
