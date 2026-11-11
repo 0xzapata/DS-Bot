@@ -55,6 +55,20 @@ export function install(rt) {
   const dropMark = (id) => {
     if (state.switching?.[id]?.pick === true) delete state.switching[id]
   }
+  // A Stop before the held message's model call: the stopped turn changes nothing. A model
+  // the owner set since the hold stands, even the pick's own (setting it turns Auto off).
+  const undo = (agent, held) => {
+    const bot = rt.botOf(held.botId)
+    audit({ bot: held.botId, name: bot?.name ?? held.name, before: refOf(held.before), pick: held.pickRef, confidence: held.confidence, applied: false, reason: 'stopped' })
+    if (sameSelection(agent.model.current(), held.pick) && bot?.auto === true && bot.appliedModel === held.pickRef) {
+      agent.model.select(held.before)
+      bot.appliedModel = held.appliedModel
+      if (held.appliedEffort === undefined) delete bot.appliedEffort
+      else bot.appliedEffort = held.appliedEffort
+    }
+    dropMark(agent.id)
+    rt.save().catch(() => {})
+  }
   ctx.on('agent/status', ({ agent, status }) => {
     if (status === 'running' && rt.chatOwners.has(agent?.id)) woke.add(agent.id)
     else woke.delete(agent?.id)
@@ -70,27 +84,18 @@ export function install(rt) {
       if (events.findLast(event => event.type === 'turn/end')?.data?.reason?.kind === 'aborted') {
         const pending = new Set([...agent.inbox.nextStep, ...agent.inbox.nextTurn].map(message => message.id))
         const said = new Set(events.filter(event => event.type === 'user/message').map(event => event.data.id))
-        keep(agent, unreached.filter(message => !pending.has(message.id) && !said.has(message.id)))
+        keep(agent, unreached.messages.filter(message => !pending.has(message.id) && !said.has(message.id)))
+        undo(agent, unreached)
       }
     }
     if (held === undefined) return
     rewake.delete(agent.id)
-    // Stopped after the hold returned: the stopped turn changes nothing. A model the owner
-    // set since the hold stands, even the pick's own (setting it turns Auto off).
+    // Stopped after the hold returned.
     if (held.signal.aborted) {
       decided.delete(agent.id)
       for (const message of held.messages) agent.inbox.remove(message.id)
       keep(agent, held.messages)
-      const bot = rt.botOf(held.botId)
-      audit({ bot: held.botId, name: bot?.name ?? held.name, before: refOf(held.before), pick: held.pickRef, confidence: held.confidence, applied: false, reason: 'stopped' })
-      if (sameSelection(agent.model.current(), held.pick) && bot?.auto === true && bot.appliedModel === held.pickRef) {
-        agent.model.select(held.before)
-        bot.appliedModel = held.appliedModel
-        if (held.appliedEffort === undefined) delete bot.appliedEffort
-        else bot.appliedEffort = held.appliedEffort
-      }
-      dropMark(agent.id)
-      rt.save().catch(() => {})
+      undo(agent, held)
       return
     }
     // After the loop has left its turn, as images.js does on idle.
@@ -216,8 +221,11 @@ export function install(rt) {
       const decision = await next()
       // The held message would be in its model call by now with Auto off, so a Stop
       // leaves it in the chat as a Stop there does.
-      const ids = new Set(held.map(message => message.id))
-      if (signal?.aborted) keep(agent, payload.messages.filter(message => ids.has(message.id)))
+      const ids = new Set(held.messages.map(message => message.id))
+      if (signal?.aborted) {
+        keep(agent, payload.messages.filter(message => ids.has(message.id)))
+        undo(agent, held)
+      }
       return heldFirst(decision, payload.messages, ids)
     }
     if (!woken || payload.step !== 1 || signal?.aborted) return next()
@@ -252,14 +260,15 @@ export function install(rt) {
       // and that turn runs on the pick.
       // The live record: the store can replace it (adopt) while the pick waits.
       const live = rt.botOf(botId)
-      rewake.set(agent.id, { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, confidence: verdict.confidence, botId, name: bot.name, appliedModel: live?.appliedModel, appliedEffort: live?.appliedEffort })
+      const entry = { signal, messages, before: payload.modelSelection, pick: agent.model.current(), pickRef: verdict.pick, confidence: verdict.confidence, botId, name: bot.name, appliedModel: live?.appliedModel, appliedEffort: live?.appliedEffort }
+      rewake.set(agent.id, entry)
       if (live !== undefined) {
         live.appliedModel = verdict.pick
         if (verdict.effort === undefined) delete live.appliedEffort
         else live.appliedEffort = verdict.effort
       }
       rt.liveOf(agent.id).switched = true
-      decided.set(agent.id, messages)
+      decided.set(agent.id, entry)
       // Saved, so a restart before the wake still wakes the chat (parts.js, heldBack).
       // Input sent or a Stop from here on is the wake's to order or undo (above).
       state.switching ??= {}

@@ -4,6 +4,10 @@
 // model changes only for a message answered on it.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { format } from 'node:util'
 import { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -26,7 +30,7 @@ const settle = async (check, ms = 4000) => {
 // after `delayMs`. `at(name)` runs at the start of every call the picker makes into
 // DS Bot or the model registry, as DSH claims the first message, and as the Session's
 // model changes: every await in the pick is on one of those, so a test can act at each.
-async function boot(t, { delayMs = 100, at } = {}) {
+async function boot(t, { delayMs = 100, at, home } = {}) {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
   const calls = []
@@ -53,9 +57,9 @@ async function boot(t, { delayMs = 100, at } = {}) {
   const bots = new Map([['b', bot]])
   const rt = {
     ctx,
-    home: '/nonexistent/auto-model-loop',
+    home: home ?? '/nonexistent/auto-model-loop',
     state: { prefs: { jev: true, modelNotes: { [`${PROVIDER}/flash`]: 'quick', [`${PROVIDER}/pro`]: 'hard' } } },
-    readOnly: () => 'test',
+    readOnly: () => (home === undefined ? 'test' : undefined),
     warn: (template, ...args) => warnings.push(format(template, ...args)),
     chatOwners: new Map([['b', 'b']]),
     botOf: id => bots.get(id),
@@ -122,9 +126,35 @@ async function pointsOf(t) {
   return seen.map((name, index) => [name, seen.slice(0, index + 1).filter(each => each === name).length])
 }
 // A boot that runs `act` once, at the nth call of `name`.
-const bootAt = (t, [name, nth], act) => {
+const bootAt = (t, [name, nth], act, options = {}) => {
   let count = 0
-  return boot(t, { at: (called, agent) => { if (called === name && ++count === nth) act(agent) } })
+  return boot(t, { ...options, at: (called, agent) => { if (called === name && ++count === nth) act(agent) } })
+}
+
+// A Stop in the turn the wake started, before its model call (live runs 3 and 7: Stop a few
+// ms after the pick): the old model comes back and the audit says so.
+for (const point of [['claimed', 2], ['save', 2], ['pre-step', 2]]) {
+  for (const [kind, stop] of [
+    ['DSH Stop', agent => agent.cancel({ kind: 'user' }, { keepInbox: true })],
+    ['DS Bot Stop', agent => { if (agent.status === 'running') agent.cancel({ kind: 'user' }) }],
+  ]) {
+    test(`a ${kind} at ${point.join('#')}, after the wake: the old model comes back, audited as stopped`, async (t) => {
+      const home = await mkdtemp(join(tmpdir(), 'auto-model-loop-'))
+      t.after(() => rm(home, { recursive: true, force: true }))
+      const env = await bootAt(t, point, stop, { home })
+      env.agent.followup(userMessage('first'))
+      await env.quiet()
+      assert.deepEqual(env.calls, [])
+      assert.deepEqual([env.model(), env.bot.appliedModel], ['flash', `${PROVIDER}/flash`])
+      assert.deepEqual(env.history(), ['first'])
+      assert.equal(env.agent.inbox.hasPending, false)
+      await settle(() => existsSync(join(home, 'model-audit.jsonl')))
+      await new Promise(resolve => setTimeout(resolve, 30))
+      const lines = (await readFile(join(home, 'model-audit.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+      assert.deepEqual(lines.map(line => [line.reason, line.applied]), [['picked', true], ['stopped', false]])
+      assert.equal(env.rt.state.switching?.b, undefined)
+    })
+  }
 }
 
 test('a steer during the judgment: one turn on the current model, the first message first', async (t) => {
