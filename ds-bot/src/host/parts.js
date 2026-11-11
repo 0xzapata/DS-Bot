@@ -1829,5 +1829,5 @@ export function install(rt) {
     return true
   }
 
-  Object.assign(rt, { clock, partsOf, historyEntry, partLines, noteText, earlierPage, chatPage, displayItems, followFolder, followEngine, heldBack, newPart, newSession, closedPart, switchPart, sessionTokens: session => tokensOf(session), switchJobs: () => switches.values() })
+  Object.assign(rt, { clock, partsOf, historyEntry, partLines, noteText, earlierPage, chatPage, displayItems, followFolder, followEngine, heldBack, newPart, newSession, closedPart, switchPart, sessionTokens: session => tokensOf(session), switchJobs: () => switches.values(), restoreInput: restore, wakeInput: wake })
 }

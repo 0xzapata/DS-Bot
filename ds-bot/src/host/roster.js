@@ -393,6 +393,8 @@ export function install(rt) {
     if (engineChanged && [rt.chatOf(id), ...rt.groupSessionsOf(id)].some(sessionId => rt.hasSubagents?.(sessionId) === true)) {
       throw Object.assign(new Error('A subagent the Bot started is still working; wait for it to finish, then try again'), { code: 'bot/busy' })
     }
+    const autoOn = patch.auto === true && patch.model === undefined
+    if (autoOn && rt.isLocalAgentRef?.(bot.model ?? bot.appliedModel) === true) throw new Error(`${bot.name} runs on a local agent, which picks no model by itself`)
     // A new level resolves against the model the Bot will run on: the new one, the
     // model it keeps, or — the model cleared — the one it last ran on.
     const effortRef = modelRef === undefined ? bot.model ?? bot.appliedModel : modelRef ?? bot.appliedModel
@@ -430,6 +432,14 @@ export function install(rt) {
       const avatar = cleanAvatar(patch.avatar)
       if (avatar) bot.avatar = avatar
       else delete bot.avatar
+    }
+    // Auto (auto-model.js) is an added field, so an older build reads the Bot as an
+    // ordinary one on its own model. A model or run mode set for the Bot turns it off,
+    // and the Bot's chat goes back to that model.
+    if (autoOn) bot.auto = true
+    else if (bot.auto === true && (patch.auto === false || patch.model !== undefined)) {
+      delete bot.auto
+      modelChanged = true
     }
     if (patch.model !== undefined) {
       // A failure that blocked the Bot was its old model's (turns.js).

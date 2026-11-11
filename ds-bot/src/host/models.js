@@ -251,21 +251,26 @@ export function install(rt) {
     const ref = await desiredModel(bot)
     if (ref === undefined) return ref
     const effort = await desiredEffort(bot, ref)
-    const ownChanged = force || bot.appliedModel !== ref || (bot.appliedEffort ?? undefined) !== effort
     const route = { ...splitRef(ref), ...(effort === undefined ? {} : { reasoningEffort: effort }) }
-    if (ownChanged) await selectSessionModel(rt.chatOf(bot.id), route)
+    // An Auto pick (auto-model.js) stays on the Bot's own chat until the next pick, while
+    // it is served; its group Sessions stay on the Bot's own model.
+    const kept = bot.auto === true && !force && bot.appliedModel !== ref && !isLocal(ref) && !isLocal(bot.appliedModel) && isUsable(bot.appliedModel)
+    const ownRef = kept ? bot.appliedModel : ref
+    const ownEffort = kept ? await desiredEffort(bot, ownRef) : effort
+    const ownChanged = force || bot.appliedModel !== ownRef || (bot.appliedEffort ?? undefined) !== ownEffort
+    if (ownChanged) await selectSessionModel(rt.chatOf(bot.id), { ...splitRef(ownRef), ...(ownEffort === undefined ? {} : { reasoningEffort: ownEffort }) })
     for (const sessionId of rt.groupSessionsOf(bot.id)) {
       const applied = sessionSelections.get(sessionId)
       if (!force && applied !== undefined && sameSelection(applied, route)) continue
       await selectSessionModel(sessionId, route)
         .catch(error => rt.warn('ds-bot: model for %s in a group not applied: %s', bot.name, error))
     }
-    if (!ownChanged) return ref
-    bot.appliedModel = ref
-    if (effort === undefined) delete bot.appliedEffort
-    else bot.appliedEffort = effort
+    if (!ownChanged) return ownRef
+    bot.appliedModel = ownRef
+    if (ownEffort === undefined) delete bot.appliedEffort
+    else bot.appliedEffort = ownEffort
     await rt.save()
-    return ref
+    return ownRef
   }
 
   // A provider may register after the plugin starts; a greeting waits for its Bot's
