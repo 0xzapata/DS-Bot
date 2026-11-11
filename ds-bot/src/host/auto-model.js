@@ -76,12 +76,12 @@ export function install(rt) {
     if (held === undefined) return
     rewake.delete(agent.id)
     // Stopped after the hold returned: the stopped turn changes nothing. A model the owner
-    // set since the hold stands.
+    // set since the hold stands, even the pick's own (setting it turns Auto off).
     if (held.signal.aborted) {
       decided.delete(agent.id)
       for (const message of held.messages) agent.inbox.remove(message.id)
       keep(agent, held.messages)
-      if (sameSelection(agent.model.current(), held.pick) && held.bot.appliedModel === held.pickRef) {
+      if (sameSelection(agent.model.current(), held.pick) && held.bot.appliedModel === held.pickRef && rt.botOf(held.bot.id)?.auto === true) {
         agent.model.select(held.before)
         held.bot.appliedModel = held.appliedModel
         if (held.appliedEffort === undefined) delete held.bot.appliedEffort

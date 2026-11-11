@@ -360,6 +360,20 @@ test('the Bot model set after the hold, then a Stop: the new model stays', async
   assert.equal(env.rt.state.switching?.b, undefined)
 })
 
+test('the Bot model set to the pick after the hold, then a Stop: the owner\'s model stays', async (t) => {
+  const pro = `${PROVIDER}/pro`
+  const env = await bootAt(t, ['save', 1], (agent) => {
+    delete env.bot.auto
+    env.bot.model = pro
+    agent.model.select({ provider: PROVIDER, model: 'pro' })
+    env.bot.appliedModel = pro
+    agent.cancel({ kind: 'user' }, { keepInbox: true })
+  })
+  env.agent.followup(userMessage('first'))
+  await env.quiet()
+  assert.deepEqual([env.model(), env.bot.appliedModel, env.bot.model], ['pro', pro, pro])
+})
+
 // Every point of the pick in turn, so an await added to it later is covered too.
 test('a steer, a followup or a Stop at each point of the pick keeps every message once and in order', async (t) => {
   const points = await pointsOf(t)
