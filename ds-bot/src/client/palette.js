@@ -12,6 +12,16 @@ import { t } from './i18n.js'
 // rows (24px avatar, title, subtitle). Bots and groups match on name and role; past
 // messages match on their text.
 const PALETTE_EXIT_MS = 160
+// Hits in the chats a /new closed (the host searches them): each opens its Bot's chat
+// with the closed chat unfolded above the composer.
+export const closedMessages = (roster, hits, actions) => hits.filter(hit => roster.byId[hit.botId] !== undefined).map((hit, index) => {
+  const bot = roster.byId[hit.botId]
+  return {
+    key: `closed:${hit.sessionId}:${index}`, title: bot.name, subtitle: hit.text,
+    avatar: h(BotAvatar, { bot, size: 24, badge: false, live: false }),
+    run: () => { actions.openSession(bot.id); actions.openEarlier(bot.id) },
+  }
+})
 export function CommandPalette({ start, token, roster, actions, useSessions }) {
   const [query, setQuery] = useState(start ?? '')
   const [cursor, setCursor] = useState(0)
@@ -46,6 +56,14 @@ export function CommandPalette({ start, token, roster, actions, useSessions }) {
     }
     return JSON.stringify(hits)
   })
+  const [closedHits, setClosedHits] = useState([])
+  const searchesClosed = wanted.length >= 2 && roster.bots.some(bot => bot.closed?.length > 0)
+  useEffect(() => {
+    if (!searchesClosed) { setClosedHits([]); return undefined }
+    let stale = false
+    const timer = setTimeout(() => { void actions.searchClosed(wanted).then((hits) => { if (!stale) setClosedHits(hits) }) }, 200)
+    return () => { stale = true; clearTimeout(timer) }
+  }, [wanted, searchesClosed])
   const matchesName = (...fields) => wanted === '' || fields.some(field => (field ?? '').toLowerCase().includes(wanted))
   const sections = []
   const people = [
@@ -76,6 +94,7 @@ export function CommandPalette({ start, token, roster, actions, useSessions }) {
       run: () => actions.openSession(id),
     }
   })
+  messages.push(...closedMessages(roster, closedHits, actions))
   if (messages.length) sections.push([t('Messages'), messages])
   const commands = [
     { key: 'cmd:new', icon: h(PlusIcon), title: t('New chat'), run: () => actions.openNewChat('new') },

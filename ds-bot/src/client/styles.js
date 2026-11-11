@@ -1257,6 +1257,8 @@ div:has(> nav [class*="_marks"]){display:none!important}
 .bt-open-new .bt-new-sep{margin:18px 0 0}
 .bt-open-new .bt-time-sep{height:16px;margin:32px 0 2px}
 .bt-earlier{display:flex;flex-direction:column;gap:6px}
+.bt-earlier-dock{width:100%;max-width:var(--dsh-chat-content-width,748px);margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.bt-earlier-box{align-self:stretch;max-height:min(50vh,420px);overflow-y:auto;padding:8px 12px;border:1px solid var(--bt-line);border-radius:12px;background:var(--bt-card)}
 .bt-earlier-top{display:flex;justify-content:center;align-items:center;height:34px;flex:none}
 .bt-earlier-top:empty{display:none}
 .bt-earlier-top .bt-soft{height:28px;font-size:12px;padding:0 12px}

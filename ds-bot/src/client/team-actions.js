@@ -202,6 +202,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     fileText: file => call('file-text', { file }).catch(() => undefined),
     roomProgress: roomId => call('room-progress', { roomId }).catch(() => []),
     earlier: (sessionId, cursor) => call('earlier', { sessionId, cursor: cursor ?? null }),
+    // The closed chat of a Bot that was started over (cells.js EarlierDock), shut or open.
+    toggleEarlier: (botId) => { ui.set(state => ({ ...state, earlier: state.earlier === botId ? null : botId })) },
+    openEarlier: (botId) => { ui.set(state => ({ ...state, earlier: botId })) },
+    searchClosed: query => call('search-closed', { query }).catch(() => []),
     // Hours come back in this browser's time zone, so days start at local midnight.
     usage: () => call('usage', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
     roles: () => call('roles'),

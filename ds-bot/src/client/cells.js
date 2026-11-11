@@ -2,7 +2,7 @@ import { createElement as h, Fragment, useEffect, useLayoutEffect, useMemo, useR
 import { createPortal } from 'react-dom'
 import { MarkdownText, writeClipboard } from './dsh-primitives.js'
 import { inkText } from './inks.js'
-import { linkMentions, mentionTarget, dayLabel, contentText, stripHeader, isHiddenTurn, isRelayContext, relaysBefore, relayPart, commRunOf, toolName, toolArgs, reminderPrompts, elapsedLabel, clockLabel, messageClock } from './text.js'
+import { currentPart, linkMentions, mentionTarget, dayLabel, contentText, stripHeader, isHiddenTurn, isRelayContext, relaysBefore, relayPart, commRunOf, toolName, toolArgs, reminderPrompts, elapsedLabel, clockLabel, messageClock } from './text.js'
 import { SmileIcon, ReplyIcon, DotsIcon, CheckIcon, DownloadIcon, CopyIcon, GoalIcon, MemoryIcon, MoveIcon } from './icons.js'
 import { goalEventText } from './goal.js'
 import { colorOf, toolState, BotMark, RoomAvatar } from './mark.js'
@@ -569,6 +569,19 @@ function EarlierParts({ sessionId, roster, actions }) {
           : view.cursor ? h('button', { type: 'button', className: 'bt-soft', onClick: () => load(view.cursor) }, t('Load earlier')) : null),
     h(ChatRows, { items, sessionId, roster, actions, onBtwDelete: removeBtw }),
     h(PartLine, { time: view.startedAt }))
+}
+
+// A Bot started over with /new opens its new part with nothing, so no handoff row mounts
+// the earlier parts above it. This dock, above the composer, offers them instead: the same
+// feed, in a box that scrolls. A part switch with a handoff note keeps its feed in the chat.
+export function EarlierDock({ sessionId, useRoster, useUi, actions }) {
+  const roster = useRoster(value => value)
+  const bot = roster.byId[sessionId]
+  const open = useUi(state => state.earlier === bot?.id)
+  if (bot === undefined || currentPart(bot) !== sessionId || !(bot.closed ?? []).includes(bot.parts?.at(-1))) return null
+  return h('div', { className: 'bt-earlier-dock' },
+    h('button', { type: 'button', className: 'bt-soft', 'aria-expanded': open, onClick: () => actions.toggleEarlier(bot.id) }, t('Earlier messages')),
+    open ? h('div', { className: 'bt-earlier-box' }, h(EarlierParts, { sessionId, roster, actions })) : null)
 }
 
 // A Bot chat's entries as the host lists them (the `earlier` and `chat` endpoints): the

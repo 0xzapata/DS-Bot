@@ -2301,6 +2301,14 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     fileText: (file) => call2("file-text", { file }).catch(() => void 0),
     roomProgress: (roomId) => call2("room-progress", { roomId }).catch(() => []),
     earlier: (sessionId, cursor) => call2("earlier", { sessionId, cursor: cursor ?? null }),
+    // The closed chat of a Bot that was started over (cells.js EarlierDock), shut or open.
+    toggleEarlier: (botId) => {
+      ui2.set((state) => ({ ...state, earlier: state.earlier === botId ? null : botId }));
+    },
+    openEarlier: (botId) => {
+      ui2.set((state) => ({ ...state, earlier: botId }));
+    },
+    searchClosed: (query) => call2("search-closed", { query }).catch(() => []),
     // Hours come back in this browser's time zone, so days start at local midnight.
     usage: () => call2("usage", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
     roles: () => call2("roles"),
@@ -4376,6 +4384,8 @@ div:has(> nav [class*="_marks"]){display:none!important}
 .bt-open-new .bt-new-sep{margin:18px 0 0}
 .bt-open-new .bt-time-sep{height:16px;margin:32px 0 2px}
 .bt-earlier{display:flex;flex-direction:column;gap:6px}
+.bt-earlier-dock{width:100%;max-width:var(--dsh-chat-content-width,748px);margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.bt-earlier-box{align-self:stretch;max-height:min(50vh,420px);overflow-y:auto;padding:8px 12px;border:1px solid var(--bt-line);border-radius:12px;background:var(--bt-card)}
 .bt-earlier-top{display:flex;justify-content:center;align-items:center;height:34px;flex:none}
 .bt-earlier-top:empty{display:none}
 .bt-earlier-top .bt-soft{height:28px;font-size:12px;padding:0 12px}
@@ -14400,6 +14410,18 @@ function EarlierParts({ sessionId, roster, actions }) {
     (0, import_react32.createElement)(PartLine, { time: view.startedAt })
   );
 }
+function EarlierDock({ sessionId, useRoster, useUi, actions }) {
+  const roster = useRoster((value) => value);
+  const bot = roster.byId[sessionId];
+  const open = useUi((state) => state.earlier === bot?.id);
+  if (bot === void 0 || currentPart(bot) !== sessionId || !(bot.closed ?? []).includes(bot.parts?.at(-1))) return null;
+  return (0, import_react32.createElement)(
+    "div",
+    { className: "bt-earlier-dock" },
+    (0, import_react32.createElement)("button", { type: "button", className: "bt-soft", "aria-expanded": open, onClick: () => actions.toggleEarlier(bot.id) }, t("Earlier messages")),
+    open ? (0, import_react32.createElement)("div", { className: "bt-earlier-box" }, (0, import_react32.createElement)(EarlierParts, { sessionId, roster, actions })) : null
+  );
+}
 function ChatRows({ items, sessionId, roster, actions, useUi, clock: clock4 = false, onBtwDelete }) {
   const selfId = roster.byId[sessionId]?.id;
   const rows2 = [];
@@ -24333,6 +24355,19 @@ var TURN_ERROR_CSS = `
 // src/client/palette.js
 var import_react53 = require("react");
 var PALETTE_EXIT_MS = 160;
+var closedMessages = (roster, hits, actions) => hits.filter((hit) => roster.byId[hit.botId] !== void 0).map((hit, index) => {
+  const bot = roster.byId[hit.botId];
+  return {
+    key: `closed:${hit.sessionId}:${index}`,
+    title: bot.name,
+    subtitle: hit.text,
+    avatar: (0, import_react53.createElement)(BotAvatar, { bot, size: 24, badge: false, live: false }),
+    run: () => {
+      actions.openSession(bot.id);
+      actions.openEarlier(bot.id);
+    }
+  };
+});
 function CommandPalette({ start, token, roster, actions, useSessions }) {
   const [query, setQuery] = (0, import_react53.useState)(start ?? "");
   const [cursor, setCursor] = (0, import_react53.useState)(0);
@@ -24367,6 +24402,24 @@ function CommandPalette({ start, token, roster, actions, useSessions }) {
     }
     return JSON.stringify(hits);
   });
+  const [closedHits, setClosedHits] = (0, import_react53.useState)([]);
+  const searchesClosed = wanted.length >= 2 && roster.bots.some((bot) => bot.closed?.length > 0);
+  (0, import_react53.useEffect)(() => {
+    if (!searchesClosed) {
+      setClosedHits([]);
+      return void 0;
+    }
+    let stale = false;
+    const timer = setTimeout(() => {
+      void actions.searchClosed(wanted).then((hits) => {
+        if (!stale) setClosedHits(hits);
+      });
+    }, 200);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [wanted, searchesClosed]);
   const matchesName = (...fields) => wanted === "" || fields.some((field) => (field ?? "").toLowerCase().includes(wanted));
   const sections = [];
   const people = [
@@ -24413,6 +24466,7 @@ function CommandPalette({ start, token, roster, actions, useSessions }) {
       run: () => actions.openSession(id)
     };
   });
+  messages.push(...closedMessages(roster, closedHits, actions));
   if (messages.length) sections.push([t("Messages"), messages]);
   const commands = [
     { key: "cmd:new", icon: (0, import_react53.createElement)(PlusIcon), title: t("New chat"), run: () => actions.openNewChat("new") },
@@ -28946,7 +29000,7 @@ function apply(ctx) {
   const reactionStore = sharedMap(STORAGE.reactions);
   const seenStore = sharedMap(STORAGE.seen);
   let seenAt = seenStore.read();
-  const ui2 = createSource({ details: null, view: "details", renaming: false, tab: null, side: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false, goalCompose: null, goalOpen: null });
+  const ui2 = createSource({ details: null, view: "details", renaming: false, tab: null, side: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, earlier: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false, goalCompose: null, goalOpen: null });
   let sidebarSaved = readSidebar();
   const sidebarPref = createSource(sidebarSaved.pref);
   const frame = createSource({ viewport: typeof window === "undefined" ? 0 : window.innerWidth, sidebarWidth: sidebarSaved.width, collapsedWidth: 0, collapsed: false });
@@ -29995,6 +30049,7 @@ function apply(ctx) {
     () => shadow("conversation.input.dock", { id: "bot-connector", order: -89, inject: face }, ConnectorDock),
     () => shadow("conversation.input.dock", { id: "bot-mail", order: -88, inject: face }, MailDock),
     () => shadow("conversation.input.dock", { id: "bot-handoff", order: -85, inject: face }, HandoffDock),
+    () => shadow("conversation.input.dock", { id: "bot-earlier", order: -86, inject: face }, EarlierDock),
     () => shadow("conversation.input.dock", { id: "bot-computer-handoff", order: -84, inject: face }, ComputerHandoffDock),
     () => shadow("conversation.input.dock", { id: "bot-computer-app", order: -83, inject: face }, AppAccessDock),
     () => shadow("conversation.input.dock", { id: "bot-learning", order: 850, priority: BOT_PRIORITY, inject: face }, LearningDock),

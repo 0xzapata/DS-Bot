@@ -231,6 +231,28 @@ export function install(rt) {
     return { lines: rows.sort(byTime).map(row => rowLine(parts, row, terms)), every }
   }
 
+  // Words in the parts a /new closed, for the command palette: the team's only search
+  // that reaches them, since a closed part is archived and the client lists no archive.
+  async function searchClosed(query, limit = OWN_CHAT_SEARCH) {
+    const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))].slice(0, SEARCH_TERMS_MAX)
+    if (terms.join('').length < 2) return []
+    const closed = Object.values(rt.state.bots).flatMap(bot => (bot.segments ?? []).filter(segment => segment.closed === true).map(segment => ({ botId: bot.id, ...segment })))
+    const hit = (part, text) => ({ botId: part.botId, sessionId: part.sessionId, text: excerpt(text.replace(/\s+/g, ' '), terms[0], 120) })
+    const index = await openIndex()
+    if (index === null) {
+      const found = []
+      for (const part of closed) {
+        for await (const line of rt.partLines(part.sessionId, AbortSignal.timeout(HISTORY_TIMEOUT_MS))) {
+          if (terms.every(term => line.text.toLowerCase().includes(term))) found.push(hit(part, line.text))
+        }
+      }
+      return found.slice(0, limit)
+    }
+    for (const part of closed) await catchUp(index, part).catch(error => rt.warn('ds-bot: indexing %s failed: %s', part.sessionId, error))
+    const { sql, args } = termQuery(terms, closed.map(part => part.sessionId), limit)
+    return index.db.prepare(sql).all(...args).map(row => hit(closed.find(part => part.sessionId === row.session), row.text))
+  }
+
   // The latest messages across all parts, oldest first.
   async function latestOwnChat(botId, { askingId, limit = OWN_CHAT_READ } = {}) {
     const { index, parts, hidden } = await indexedParts(botId, askingId)
@@ -289,5 +311,5 @@ export function install(rt) {
     ].join('\n')
   }
 
-  Object.assign(rt, { eventsBackwards, searchOwnChat, latestOwnChat, aroundOwnChat, partIndex, ownChatBrief })
+  Object.assign(rt, { eventsBackwards, searchOwnChat, searchClosed, latestOwnChat, aroundOwnChat, partIndex, ownChatBrief })
 }
