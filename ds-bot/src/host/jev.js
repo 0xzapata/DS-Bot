@@ -22,7 +22,8 @@ const isObject = value => value !== null && typeof value === 'object' && !Array.
 
 // The answers to `questions` in `body`, or undefined when the body is not exactly the
 // shape asked for: every question answered with its own type, a choice one that was
-// offered, every number a probability, a choice's probabilities a distribution over its options.
+// offered, every number a probability, a choice's probabilities a distribution over its
+// options, and the choice the most probable of them.
 export function parseAnswers(body, questions) {
   if (!isObject(body) || !isObject(body.answers) || !isObject(body.usage)) return undefined
   if (!Number.isSafeInteger(body.usage.input_tokens) || body.usage.input_tokens < 0) return undefined
@@ -46,6 +47,7 @@ export function parseAnswers(body, questions) {
     // PROBABILITY_SLACK for rounding.
     if (options.some(option => !Object.hasOwn(probabilities, option))) return undefined
     if (Math.abs(options.reduce((sum, option) => sum + probabilities[option], 0) - 1) > PROBABILITY_SLACK) return undefined
+    if (options.some(option => probabilities[option] > probabilities[answer.choice])) return undefined
     if (answer.confidence !== undefined && answer.confidence !== null && !isProbability(answer.confidence)) return undefined
     answers[id] = { type: 'choice', choice: answer.choice, probabilities: { ...probabilities }, ...(isProbability(answer.confidence) ? { confidence: answer.confidence } : {}) }
   }

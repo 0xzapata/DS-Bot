@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { format } from 'node:util'
-import { JEV_MODEL, install } from '../src/host/jev.js'
+import { JEV_MODEL, install, parseAnswers } from '../src/host/jev.js'
 
 const KEY = 'ts-test-key-1234567890'
 const QUESTIONS = {
@@ -117,6 +117,7 @@ test('every failure resolves to null, is logged once with a reason, and counts n
     ['no probabilities', json(200, { ...GOOD, answers: { ...GOOD.answers, model: { type: 'choice', choice: 'a', probabilities: {} } } })],
     ['an offered option without a probability', json(200, { ...GOOD, answers: { ...GOOD.answers, model: { type: 'choice', choice: 'a', probabilities: { a: 1 } } } })],
     ['probabilities that sum under 1', json(200, { ...GOOD, answers: { ...GOOD.answers, model: { type: 'choice', choice: 'a', probabilities: { a: 0.5, b: 0.3 } } } })],
+    ['a choice that is not the most probable', json(200, { ...GOOD, answers: { ...GOOD.answers, model: { type: 'choice', choice: 'a', confidence: 0.9, probabilities: { a: 0.2, b: 0.8 } } } })],
     ['a question left unanswered', json(200, { ...GOOD, answers: { model: GOOD.answers.model } })],
     ['an answer of the wrong type', json(200, { ...GOOD, answers: { ...GOOD.answers, hard: { type: 'choice', choice: 'a', probabilities: {} } } })],
     ['a noul outside 0 to 1', json(200, { ...GOOD, answers: { ...GOOD.answers, hard: { type: 'noul', noul: 1.5 } } })],
@@ -175,4 +176,12 @@ test('a choice without confidence still parses; a key is stored, reported only a
   await assert.rejects(rt.setJevKey('NAME=value'), /Paste only the key/)
   assert.deepEqual(await rt.setJevKey(null), { set: false, writable: true })
   assert.equal(stored.has('TYPESAFE_API_KEY'), false)
+})
+
+test('probabilities that sum to 0.91 or 1.09, rounded, are still a distribution', () => {
+  const questions = { model: QUESTIONS.model }
+  for (const probabilities of [{ a: 0.9, b: 0.01 }, { a: 0.95, b: 0.14 }, { a: 0.5, b: 0.5 }]) {
+    const body = { usage: { input_tokens: 1 }, answers: { model: { type: 'choice', choice: 'a', probabilities } } }
+    assert.equal(parseAnswers(body, questions)?.answers.model.choice, 'a', JSON.stringify(probabilities))
+  }
 })
