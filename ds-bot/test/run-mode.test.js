@@ -225,6 +225,29 @@ test('the user has to confirm a change of run mode', async (t) => {
   assert.equal(env.state().bots.b.model, CLI)
 })
 
+test('a change of run mode waits while a subagent of the Bot is out; a model inside it does not', async (t) => {
+  const env = await start(t)
+  for (const id of ['b', 'gb', 'gb2']) env.lastRoute.set(id, { provider: 'ds', model: 'flash' })
+  const hasSubagents = env.rt.hasSubagents
+  t.after(() => { env.rt.hasSubagents = hasSubagents })
+  // Out in a group conversation too: every conversation of the Bot would move.
+  for (const out of ['b', 'gb']) {
+    env.rt.hasSubagents = id => id === out
+    const refused = await env.call('update-bot', { id: 'b', model: CLI, changeEngine: true, role: 'Edit' })
+    assert.equal(refused.ok, false)
+    assert.equal(refused.error.code, 'bot/busy')
+    assert.equal(refused.error.message, 'A subagent the Bot started is still working; wait for it to finish, then try again')
+  }
+  assert.deepEqual(env.selected, [])
+  assert.equal(env.state().bots.b.model, DS)
+  assert.equal(env.state().bots.b.role, 'Write')
+  assert.equal(await env.preStep('b', [], 1, { provider: 'ds', model: 'flash' }), 'next')
+  // A model inside the same run mode is no switch.
+  assert.equal((await env.call('update-bot', { id: 'b', model: 'ds/pro' })).ok, true)
+  assert.equal(env.state().bots.b.model, 'ds/pro')
+  assert.deepEqual(env.created, [])
+})
+
 test('a Bot without a model of its own still moves to a CLI only by the user, confirmed', async (t) => {
   const env = await start(t, { saved: team({
     c: { id: 'c', name: 'Unset', role: '', sessionId: 'c', createdAt: 3, appliedModel: DS },

@@ -388,6 +388,11 @@ export function install(rt) {
     const engineChanged = !!modelRef && engineBefore !== undefined && rt.engineOf(modelRef) !== engineBefore
     if (engineChanged && actorId !== undefined) throw new Error(`Only the user can change what ${bot.name} runs on, in the Bot's settings`)
     if (engineChanged && patch.changeEngine !== true) throw new Error(`Changing what ${bot.name} runs on needs a confirmation in the Bot's settings`)
+    // Every conversation of the Bot moves to a fresh part, and none moves while a subagent
+    // of it is out (see subagentOut), so the change waits too: nothing of it applies.
+    if (engineChanged && [rt.chatOf(id), ...rt.groupSessionsOf(id)].some(sessionId => rt.hasSubagents?.(sessionId) === true)) {
+      throw Object.assign(new Error('A subagent the Bot started is still working; wait for it to finish, then try again'), { code: 'bot/busy' })
+    }
     // A new level resolves against the model the Bot will run on: the new one, the
     // model it keeps, or — the model cleared — the one it last ran on.
     const effortRef = modelRef === undefined ? bot.model ?? bot.appliedModel : modelRef ?? bot.appliedModel

@@ -1293,8 +1293,10 @@ export function install(rt) {
       partBase.set(agent.id, (tokensOf(agent.session) ?? 0) + fresh)
     }
     // ponytail: while a subagent is out the part neither moves nor holds its step (a
-    // hold would wake it again at once), so off its engine it runs on until the run is
-    // back. Upgrade: hold with a retry timer if that matters.
+    // hold would wake it again at once). updateBot refuses a run-mode change while one
+    // is out, so a part is off its engine here only when the change came mid-step and
+    // that same step started a subagent: then its steps go to the new route on the old
+    // history until the run is back. Upgrade: hold with a retry timer if that matters.
     const out = subagentOut(agent.id)
     if (!readOnly() && !out && await folderMove(agent, { midTurn: payload.step > 1 }) !== undefined) return switchBeforeStep(agent, payload, { folder: true })
     // The group's own Session moves only for its folder, never for its size: its turns
