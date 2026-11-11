@@ -117,6 +117,7 @@ async function start(t, { saved = team(), windows = {} } = {}) {
         followup() {}, steer() {}, inject() {}, cancel() {},
         send(message, target, wakeup) { this.sent.push({ id: message.id, target, wakeup }) },
         async whenIdle() {},
+        runMaintenance: job => job(new AbortController().signal),
         inbox: {
           nextStep: [],
           nextTurn: [],
@@ -330,6 +331,30 @@ test('/new during the judgment is refused as on any busy Bot', async (t) => {
   assert.equal(during.ok, false)
   assert.deepEqual(during.error, busy.error)
   assert.equal(during.error.code, 'bot/busy')
+})
+
+// H1: a new chat starts on the Bot's own model, and what the control shows follows it.
+test('/new after a pick: the chat shows the model its new Session is on, before and after a pick that stays', async (t) => {
+  await fakeJev(t, body => choose(env.agentOf('b').status === 'running' && env.rt.chatOf('b') === 'b' ? PRO : FLASH, 0.9)(body))
+  const env = await start(t)
+  await env.firstStep('b', [userMessage('hard work')])
+  env.status('b', 'idle')
+  await until(() => env.agentOf('b').sent.length === 1, 'the wake')
+  assert.equal(env.state().bots.b.appliedModel, PRO)
+  env.selected.length = 0
+  const fresh = await env.call('bot-new-session', { botId: 'b' })
+  assert.equal(fresh.ok, true, env.warnings.join("\n"))
+  const id = env.rt.chatOf('b')
+  assert.notEqual(id, 'b')
+  const onSession = () => env.selected.filter(([sessionId]) => sessionId === id).at(-1)?.[1]
+  assert.equal(onSession(), FLASH, 'a new chat starts on the Bot\'s own model')
+  assert.equal(env.state().bots.b.appliedModel, onSession(), 'shown before the message')
+  const message = userMessage('small talk')
+  assert.deepEqual(env.own(await env.firstStep(id, [message])), [message.id])
+  env.status(id, 'idle')
+  await until(() => env.audit().length === 2, 'the audit line')
+  assert.deepEqual([env.audit()[1].pick, env.audit()[1].reason], [FLASH, 'stays'])
+  assert.equal(env.state().bots.b.appliedModel, onSession(), 'shown after the message')
 })
 
 test('input that arrives during the judgment keeps the model, and the audit says why', async (t) => {

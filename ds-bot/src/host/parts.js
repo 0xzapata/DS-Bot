@@ -1162,7 +1162,8 @@ export function install(rt) {
     const intended = dir !== undefined && await rt.isFolder(dir) ? dir : rt.teamFolder()
     const freshId = await rt.createSession(room === undefined ? name : bot === undefined ? room.name : `${name} · ${room.name}`, { dir })
     const picked = await freshRoute(bot, session)
-    if (picked !== undefined && !await selectRoute({ name }, freshId, picked) && job.engine) engineRetry.set(freshId, Date.now() + FOLDER_RETRY_MS)
+    const routed = picked !== undefined && await selectRoute({ name }, freshId, picked)
+    if (picked !== undefined && !routed && job.engine) engineRetry.set(freshId, Date.now() + FOLDER_RETRY_MS)
     if (bot !== undefined) await rt.applyPermission(bot, freshId, room)
       .catch(error => rt.warn('ds-bot: permission for the fresh part of %s not applied: %s', name, error))
     // The fresh part took several awaits: a Bot or group deleted meanwhile, a member that
@@ -1188,6 +1189,13 @@ export function install(rt) {
       // A clean start closes every part before it: still readable, never written to again.
       if (job.clean) for (const earlier of bot.segments) earlier.closed = true
       bot.sessionId = freshId
+      // An Auto pick lives in appliedModel (auto-model.js), but a fresh part starts on the
+      // Bot's own model: what the chat shows follows the part.
+      if (routed && bot.auto === true) {
+        bot.appliedModel = picked.ref
+        if (picked.effort === undefined) delete bot.appliedEffort
+        else bot.appliedEffort = picked.effort
+      }
       // The card's call stays in the old part, so the fresh part shows it in the
       // composer dock, which takes a card without a call.
       if (state.questions[agent.id] !== undefined) {
