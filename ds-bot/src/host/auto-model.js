@@ -8,6 +8,8 @@
 // prompt and its first step. So the pick is asked in the first step of a turn that woke
 // an idle Session; a pick that changes the model hands that step's input back to the
 // inbox and ends the turn before any model call, and the next turn runs on the pick.
+// A pick is dropped when more input arrived while it was asked: that step goes on, on
+// the model it has, so every message is answered once and in order.
 import { appendFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { linesFor } from './steward.js'
@@ -131,6 +133,8 @@ export function install(rt) {
     if (messages.length === 0 || !messages.every(message => message.source?.kind === 'user')) return next()
     const current = refOf(payload.modelSelection)
     if (current === undefined || rt.isLocalAgentRef?.(current) === true) return next()
+    const pending = () => [...agent.inbox.nextStep, ...agent.inbox.nextTurn].map(message => message.id)
+    const before = new Set(pending())
     let verdict
     try { verdict = await judge(bot, agent, current, messages) } catch (error) {
       rt.warn('ds-bot: model pick for %s failed: %s', bot.name, error?.message ?? error)
@@ -139,6 +143,10 @@ export function install(rt) {
     if (verdict === undefined) return next()
     // Stopped while Jev answered: the stopped turn changes nothing.
     if (verdict.apply === true && payload.signal?.aborted) verdict = { ...verdict, apply: false, reason: 'stopped' }
+    // Input that arrived while Jev answered would be claimed before held input (DSH takes
+    // next-step first), so this step goes on, on the model it has: every message is then
+    // answered once, the first one first.
+    if (verdict.apply === true && pending().some(id => !before.has(id))) verdict = { ...verdict, apply: false, reason: 'input arrived' }
     if (verdict.apply === true) {
       try {
         await select(bot, agent.id, verdict.pick)

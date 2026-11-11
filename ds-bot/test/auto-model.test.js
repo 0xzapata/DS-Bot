@@ -270,6 +270,20 @@ test('Stop during the judgment changes no model', async (t) => {
   assert.equal(env.audit()[0].reason, 'stopped')
 })
 
+test('input that arrives during the judgment keeps the model, and the audit says why', async (t) => {
+  await fakeJev(t, body => ({ ...choose(PRO, 0.9)(body), delayMs: 150 }))
+  const env = await start(t)
+  const first = userMessage('first')
+  const second = userMessage('second')
+  setTimeout(() => env.agentOf('b').inbox.nextStep.push(second), 40)
+  const decision = await env.firstStep('b', [first])
+  assert.deepEqual(env.own(decision), [first.id])
+  assert.deepEqual(env.selected, [])
+  assert.deepEqual(env.agentOf('b').inbox.nextStep.map(queued => queued.id), [second.id])
+  await until(() => env.audit().length === 1, 'the audit line')
+  assert.deepEqual({ applied: env.audit()[0].applied, reason: env.audit()[0].reason }, { applied: false, reason: 'input arrived' })
+})
+
 test('a queued message, a group message, a Bot\'s message and Auto off ask nothing', async (t) => {
   const jev = await fakeJev(t, choose(PRO, 0.9))
   const env = await start(t, { saved: team({ bot: {} }) })
