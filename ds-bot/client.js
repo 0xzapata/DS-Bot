@@ -443,6 +443,7 @@ var ZH = {
   "Plain messages go to the admin, who calls others with @Name.": "普通消息先给管理员，由管理员用 @名字 点名其他成员。",
   Everyone: "所有人",
   "Every member answers in turn, admin first.": "每位成员轮流回答，管理员先说。",
+  "Needs quick judgments; otherwise the admin answers.": "需要开启快速判断；否则由管理员回答。",
   "Members · {count}": "成员 · {count}",
   "Leave the group without an admin": "让群聊不设管理员",
   Unset: "取消",
@@ -16875,9 +16876,10 @@ function PermissionPicker({ catalog, saved, onPick, repick = false }) {
 var import_react36 = require("react");
 var ROOM_MODES = [
   ["admin", "Admin leads", "Plain messages go to the admin, who calls others with @Name."],
-  ["everyone", "Everyone", "Every member answers in turn, admin first."]
+  ["everyone", "Everyone", "Every member answers in turn, admin first."],
+  ["auto", "Auto", "Needs quick judgments; otherwise the admin answers."]
 ];
-var shownMode = (room2, roster) => roster.byId[room2.admin] ? room2.mode : "everyone";
+var shownMode = (room2, roster) => roster.byId[room2.admin] || room2.mode === "auto" ? room2.mode : "everyone";
 function roomSubtitle(room2, roster) {
   const admin = roster.byId[room2.admin];
   return [t("{count} members", { count: room2.members.length }), admin ? t("Admin {name}", { name: admin.name }) : t("No admin")].join(" · ");

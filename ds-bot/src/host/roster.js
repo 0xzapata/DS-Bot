@@ -764,7 +764,7 @@ export function install(rt) {
     room.admin = admin
     if (patch.mode !== undefined && patch.mode !== room.mode) {
       room.mode = patch.mode
-      changes.push(patch.mode === 'admin' ? 'plain messages now go to the admin first' : 'every member now replies in turn')
+      changes.push(patch.mode === 'admin' ? 'plain messages now go to the admin first' : patch.mode === 'auto' ? 'a quick judgment now picks who answers plain messages' : 'every member now replies in turn')
     }
     if (notice !== undefined && notice !== (room.notice ?? '')) {
       room.notice = notice

@@ -37,7 +37,7 @@ const DELEGATION_REFUSAL = 'Bots do not start subagents, teammates or workflows.
 const MODE_PARAM = {
   type: 'string',
   enum: ROOM_MODES,
-  description: '"everyone": every member answers a plain message in turn, admin first. "admin" (the default): a plain message goes to the admin, who calls others with @Name. @mentions always choose who answers.',
+  description: '"everyone": every member answers a plain message in turn, admin first. "admin" (the default): a plain message goes to the admin, who calls others with @Name. "auto": a quick judgment picks the members a plain message or a reply needs; without one, the admin answers. @mentions always choose who answers.',
 }
 const WORK_DIR_PARAM = { type: 'string', description: 'Full path of the folder to work in, where commands and file tools start. Only when the user asks for it' }
 const SECTION_PARAM = { type: 'string', description: 'Sidebar section name to group Bots and group chats that work on the same project together; creates the section if it does not exist' }
@@ -65,7 +65,7 @@ export function install(rt) {
     const parts = [
       `members: ${members.join(', ')}`,
       section ? `section: ${section}` : '',
-      room.mode === 'admin' && room.admin ? 'plain messages go to the admin first' : 'every member replies in turn',
+      room.mode === 'auto' ? 'a quick judgment picks who answers' : room.mode === 'admin' && room.admin ? 'plain messages go to the admin first' : 'every member replies in turn',
       room.notice ? `notice: ${room.notice.split('\n')[0].slice(0, 100)}` : '',
       room.workDir ? `members work in ${room.workDir} here` : '',
       room.permission ? `members work with the ${room.permission} permissions here` : '',

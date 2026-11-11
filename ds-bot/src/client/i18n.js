@@ -410,6 +410,7 @@ const ZH = {
   'Plain messages go to the admin, who calls others with @Name.': '普通消息先给管理员，由管理员用 @名字 点名其他成员。',
   Everyone: '所有人',
   'Every member answers in turn, admin first.': '每位成员轮流回答，管理员先说。',
+  'Needs quick judgments; otherwise the admin answers.': '需要开启快速判断；否则由管理员回答。',
   'Members · {count}': '成员 · {count}',
   'Leave the group without an admin': '让群聊不设管理员',
   Unset: '取消',

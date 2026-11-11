@@ -11,10 +11,11 @@ import { t } from './i18n.js'
 export const ROOM_MODES = [
   ['admin', 'Admin leads', 'Plain messages go to the admin, who calls others with @Name.'],
   ['everyone', 'Everyone', 'Every member answers in turn, admin first.'],
+  ['auto', 'Auto', 'Needs quick judgments; otherwise the admin answers.'],
 ]
 
-// Without an admin the host answers as everyone, whatever the stored mode says.
-export const shownMode = (room, roster) => (roster.byId[room.admin] ? room.mode : 'everyone')
+// Without an admin the host answers `admin` mode as everyone; `auto` stays auto.
+export const shownMode = (room, roster) => (roster.byId[room.admin] || room.mode === 'auto' ? room.mode : 'everyone')
 
 export function roomSubtitle(room, roster) {
   const admin = roster.byId[room.admin]
