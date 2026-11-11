@@ -614,6 +614,47 @@ test('a reply handed back after /new reaches the new chat, and the answer goes u
   assert.deepEqual(await worksIn(first), {})
 })
 
+test('a reply already on its way to the chat /new closes reaches the new chat, and the answer goes up', async (t) => {
+  const { start } = bench(t)
+  const first = await start(seed())
+  const { ctx, agents, agentOf, emit, tool, call } = first
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  turns.take('b')
+  await tool('message_bot', { to: 'Tester', message: 'review my work' }, 'b')
+  turns.end('b', 'handed it on')
+  // Tester's reply has picked Writer's chat b and is held on its way there while /new runs.
+  const ensure = rt.ensureCapabilities
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  let holding = true
+  rt.ensureCapabilities = async (id) => {
+    if (id === 'b' && holding) { holding = false; await held }
+    return ensure(id)
+  }
+  turns.take('c')
+  turns.end('c', 'two findings')
+  const renewed = await call('bot-new-session', { botId: 'b' })
+  assert.equal(renewed.ok, true, JSON.stringify(renewed))
+  const fresh = renewed.value.sessionId
+  release()
+  await settled(() => callsOf(agents, 'b').length === 2)
+  // DSH wakes the closed part for the reply it queued there.
+  const preStep = ctx.listeners.get('agent/pre-step').find(listener => listener.toString().includes('takeOverStep'))
+  await preStep({ agent: agentOf('b'), messages: [callsOf(agents, 'b')[1][1]], step: 1, signal: AbortSignal.timeout(10_000) }, async () => ({ kind: 'enter', messages: [] }))
+  await settled(() => callsOf(agents, fresh).length === 1)
+  assert.equal(callsOf(agents, fresh).length, 1)
+  assert.match(textOf(callsOf(agents, fresh)[0][1].content), /^\[Reply from Tester · for the work Chief asked you for[^\n]*\ntwo findings$/)
+  turns.take(fresh)
+  turns.end(fresh, 'done')
+  await settled(() => callsOf(agents, 'a').length === 1)
+  const answer = textOf(callsOf(agents, 'a')[0][1].content)
+  assert.ok(answer.includes('two findings'), answer)
+  assert.deepEqual(await worksIn(first), {})
+})
+
 test('/new waits while a subagent the Bot delegated to is still out', async (t) => {
   const { start } = bench(t)
   const first = await start(seed())

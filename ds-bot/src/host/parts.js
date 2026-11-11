@@ -1265,12 +1265,13 @@ export function install(rt) {
     const { agent } = payload
     const past = rt.pastOwners.get(agent.id)
     if (past !== undefined && !rt.isBotSession(agent.id)) {
-      // A part closed by /new hands nothing on: its input was meant for the old chat.
-      if (closedPart(agent.id)) {
-        if (payload.messages.length > 0) rt.warn('ds-bot: %d input(s) for closed part %s not handed on to the new session', payload.messages.length, agent.id)
-        return takeOverStep(agent, payload)
-      }
-      await forward(past, payload.messages).catch(error => rt.warn('ds-bot: input for %s was not handed on: %s', agent.id, error))
+      // A part closed by /new keeps the user's own input: it was meant for the old chat.
+      // What another Bot or DS Bot sent there before /new goes on in the new chat.
+      const own = message => message.source?.kind === 'user' || message.source?.kind === REPLY_KIND
+      const closed = closedPart(agent.id)
+      const kept = closed ? payload.messages.filter(own) : []
+      if (kept.length > 0) rt.warn('ds-bot: %d input(s) of yours for closed part %s not handed on to the new session', kept.length, agent.id)
+      await forward(past, closed ? payload.messages.filter(message => !own(message)) : payload.messages).catch(error => rt.warn('ds-bot: input for %s was not handed on: %s', agent.id, error))
       return takeOverStep(agent, payload)
     }
     const place = placeOf(agent.id)
