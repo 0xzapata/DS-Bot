@@ -166,21 +166,29 @@ export function install(rt) {
     for (const message of messages) agent.inbox.remove(message.id)
     agent.model.select(before)
   }
+  const sameSelection = (a, b) => a?.provider === b?.provider && a?.model === b?.model && a?.reasoningEffort === b?.reasoningEffort
 
   // Synchronous. The Session's own model API, not rt.selectSessionModel: that one awaits,
   // and also saves the selection as the user's default, which DS Bot then writes back.
   function hold(agent, payload, { pick, effort }) {
-    const settled = () => payload.signal?.aborted !== true && agent.inbox.nextStep.length === 0
-    if (!settled()) return false
+    const selection = { ...splitRef(pick), ...(effort === undefined ? {} : { reasoningEffort: effort }) }
+    // Read live: while Jev judged, the owner may have stopped, sent, deleted the Bot, turned
+    // Auto or Jev off, or chosen a model; any of these leaves the step as DSH read it.
+    const settled = expected => payload.signal?.aborted !== true && agent.inbox.nextStep.length === 0
+      && rt.botOf(rt.chatOwners.get(agent.id))?.auto === true && state.prefs?.jev === true
+      && sameSelection(agent.model.current(), expected)
+    if (!settled(payload.modelSelection)) return false
     try {
-      agent.model.select({ ...splitRef(pick), ...(effort === undefined ? {} : { reasoningEffort: effort }) })
+      agent.model.select(selection)
       rt.restoreInput(agent, payload.messages)
       // Looked at again: these writes ran other listeners, which may have sent or stopped.
-      if (settled()) return true
+      if (settled(selection)) return true
     } catch (error) {
       rt.warn('ds-bot: %s answers on the earlier model; its input could not be held: %s', rt.botOf(rt.chatOwners.get(agent.id))?.name ?? agent.id, error?.message ?? error)
     }
-    unhold(agent, payload.messages, payload.modelSelection)
+    for (const message of payload.messages) agent.inbox.remove(message.id)
+    // Only from the pick: a model the owner chose since then stands.
+    if (sameSelection(agent.model.current(), selection)) agent.model.select(payload.modelSelection)
     return false
   }
 

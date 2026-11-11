@@ -110,7 +110,10 @@ async function start(t, { saved = team(), windows = {} } = {}) {
         // The owner's messages a Stop kept in the chat, and the Session's own model choice.
         kept: [],
         session: { id: sessionId, header: { cwd: workspace }, requestHeader: () => undefined, deriveMessages: () => [], append(type, message) { if (type === 'user/message') agents.get(sessionId).kept.push(message.id) }, snapshotEvents: () => [] },
-        model: { select: ({ provider, model, reasoningEffort }) => selected.push([sessionId, `${provider}/${model}`, ...(reasoningEffort ? [reasoningEffort] : [])]) },
+        model: {
+          current() { return this.selection },
+          select(selection) { this.selection = selection; selected.push([sessionId, `${selection.provider}/${selection.model}`, ...(selection.reasoningEffort ? [selection.reasoningEffort] : [])]) },
+        },
         followup() {}, steer() {}, inject() {}, cancel() {},
         send(message, target, wakeup) { this.sent.push({ id: message.id, target, wakeup }) },
         async whenIdle() {},
@@ -190,6 +193,7 @@ async function start(t, { saved = team(), windows = {} } = {}) {
     if (wake) status(sessionId, 'running')
     const [provider, id] = model.split('/')
     const chain = ctx.listeners.get('agent/pre-step')
+    agentOf(sessionId).model.selection = { provider, model: id }
     const payload = { agent: agentOf(sessionId), messages, step, turn: 1, signal, modelSelection: { provider, model: id } }
     const run = index => (index >= chain.length ? Promise.resolve({ kind: 'enter', messages }) : chain[index](payload, () => run(index + 1)))
     return run(0)

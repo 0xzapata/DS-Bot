@@ -32,7 +32,7 @@ async function boot(t, { delayMs = 100, at } = {}) {
   const calls = []
   class Recorder extends LlmAdapter {
     async resolveModel(provider, id) { return { provider, id, name: id, inputModalities: ['text'], context: { contextWindow: 100_000 } } }
-    async listModels() { return [{ id: 'flash', name: 'Flash' }, { id: 'pro', name: 'Pro' }] }
+    async listModels() { return [{ id: 'flash', name: 'Flash' }, { id: 'pro', name: 'Pro' }, { id: 'max', name: 'Max' }] }
     async *stream(options) {
       const messages = options.messages ?? []
       const lastAnswer = messages.findLastIndex(message => message.role === 'assistant')
@@ -50,6 +50,7 @@ async function boot(t, { delayMs = 100, at } = {}) {
   const judged = []
   let pick = `${PROVIDER}/pro`
   const bot = { id: 'b', name: 'Writer', role: 'Writes', auto: true, appliedModel: `${PROVIDER}/flash` }
+  const bots = new Map([['b', bot]])
   const rt = {
     ctx,
     home: '/nonexistent/auto-model-loop',
@@ -57,7 +58,7 @@ async function boot(t, { delayMs = 100, at } = {}) {
     readOnly: () => 'test',
     warn: (template, ...args) => warnings.push(format(template, ...args)),
     chatOwners: new Map([['b', 'b']]),
-    botOf: id => (id === 'b' ? bot : undefined),
+    botOf: id => bots.get(id),
     live: new Map(),
     liveOf: id => rt.live.get(id) ?? rt.live.set(id, {}).get(id),
     catalog: async () => [{ ref: `${PROVIDER}/flash`, name: 'Flash' }, { ref: `${PROVIDER}/pro`, name: 'Pro' }],
@@ -107,7 +108,7 @@ async function boot(t, { delayMs = 100, at } = {}) {
   const history = () => agent.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.source?.kind === 'user').map(event => textOf(event.data))
   const model = () => agent.model.current().model
   t.after(() => t.diagnostic(`calls ${JSON.stringify(calls)} turns ${turnEnds()} model ${model()} applied ${bot.appliedModel}`))
-  return { agent, bot, calls, judged, warnings, turnEnds, quiet, history, model, setPick: (value) => { pick = `${PROVIDER}/${value}` } }
+  return { agent, bot, bots, rt, calls, judged, warnings, turnEnds, quiet, history, model, setPick: (value) => { pick = `${PROVIDER}/${value}` } }
 }
 const asked = env => env.calls.flatMap(call => call.asked)
 // A notice only where the model of a request differs from the one before it.
@@ -285,6 +286,69 @@ test('a Stop during a judgment that brings no answer: no model change, and the m
   assert.deepEqual(env.history(), ['first'])
 })
 
+// What the owner can change while a pick runs: the composer's model picker, the Bot's Auto
+// switch, the Jev switch, the Bot's model in its settings (roster.updateBot: Auto off, the
+// model set, applyModel selects it), the Bot deleted. `expect(env, held)` checks the
+// end state; `held` is whether the pick was already applied when the change came.
+const max = `${PROVIDER}/max`
+const OWNER_CHANGES = [
+  ['manual model select', (env, agent) => agent.model.select({ provider: PROVIDER, model: 'max' }), (env, held, label) => {
+    assert.equal(env.model(), 'max', label)
+    if (!held) assert.equal(env.bot.appliedModel, `${PROVIDER}/flash`, label)
+  }],
+  ['Auto off', (env) => { delete env.bot.auto }, (env, held, label) => {
+    assert.deepEqual([env.model(), env.bot.appliedModel], held ? ['pro', `${PROVIDER}/pro`] : ['flash', `${PROVIDER}/flash`], label)
+  }],
+  ['Jev off', (env) => { env.rt.state.prefs.jev = false }, (env, held, label) => {
+    assert.deepEqual([env.model(), env.bot.appliedModel], held ? ['pro', `${PROVIDER}/pro`] : ['flash', `${PROVIDER}/flash`], label)
+  }],
+  ['Bot model set', (env, agent) => {
+    delete env.bot.auto
+    env.bot.model = max
+    agent.model.select({ provider: PROVIDER, model: 'max' })
+    env.bot.appliedModel = max
+  }, (env, _held, label) => assert.deepEqual([env.model(), env.bot.appliedModel, env.bot.model], ['max', max, max], label)],
+  ['Bot deleted', (env) => { env.bots.delete('b') }, (env, held, label) => {
+    assert.equal(env.model(), held ? 'pro' : 'flash', label)
+    assert.equal(env.rt.state.switching?.b, undefined, label)
+  }],
+]
+// A boot that makes one owner change at the nth call of `name`, then runs `then`. The
+// owner's change is a request of its own, so in a sweep (`later`) it lands at the
+// picker's next await, as a request does, not inside its synchronous code.
+async function bootOwnerAt(t, point, change, then, later = false) {
+  let env
+  const act = (agent) => {
+    change(env, agent)
+    then?.(agent)
+  }
+  const ready = await bootAt(t, point, agent => (later ? queueMicrotask(() => act(agent)) : act(agent)))
+  env = ready
+  return env
+}
+
+// F1: a change the owner makes while Jev judges stands; the pick does not override it.
+for (const [what, change, expect] of OWNER_CHANGES) {
+  test(`${what} during the judgment: the owner's change stands`, async (t) => {
+    const env = await bootOwnerAt(t, ['decide', 1], change)
+    env.agent.followup(userMessage('first'))
+    await env.quiet()
+    assert.deepEqual(asked(env), ['first'])
+    expect(env, false, what)
+    assert.equal(env.warnings.length, 0, env.warnings.join('\n'))
+  })
+}
+
+test('the Bot model set in settings during the judgment: later turns stay on it', async (t) => {
+  const env = await bootOwnerAt(t, ['decide', 1], OWNER_CHANGES[3][1])
+  env.agent.followup(userMessage('first'))
+  await env.quiet()
+  env.agent.followup(userMessage('next'))
+  await env.quiet()
+  assert.deepEqual(env.calls.map(call => call.model), ['flash', 'max'])
+  assert.deepEqual([env.model(), env.bot.appliedModel], ['max', max])
+})
+
 // Every point of the pick in turn, so an await added to it later is covered too.
 test('a steer, a followup or a Stop at each point of the pick keeps every message once and in order', async (t) => {
   const points = await pointsOf(t)
@@ -324,6 +388,16 @@ test('a steer, a followup or a Stop at each point of the pick keeps every messag
       // A Stop before the held turn ended changes no model.
       if (before === 0) assert.deepEqual([env.calls, env.model()], [[], 'flash'], label)
       assert.ok(noticesMatch(env), label)
+    }
+    for (const [kind, change, expect] of OWNER_CHANGES) {
+      let held
+      const env = await bootOwnerAt(t, point, (each, agent) => { held = each.bot.appliedModel === `${PROVIDER}/pro`; change(each, agent) }, undefined, true)
+      env.agent.followup(userMessage('first'))
+      await env.quiet()
+      const label = `${kind} at ${where}: ${JSON.stringify(env.calls)} model ${env.model()} applied ${env.bot.appliedModel}`
+      assert.deepEqual(asked(env), ['first'], label)
+      assert.equal(env.agent.inbox.hasPending, false, label)
+      expect(env, held, label)
     }
   }
 })
