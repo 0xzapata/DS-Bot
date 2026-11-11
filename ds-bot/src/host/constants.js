@@ -52,8 +52,9 @@ export const REFERENCE_KIND = 'session-reference'
 // `everyone`: every member answers a plain message in turn, admin first. `admin`: a
 // plain message goes to the admin, who calls others with @mentions. New groups start
 // in `admin` mode, because every extra speaker re-reads its whole context; a group
-// without an admin still answers as `everyone`.
-export const ROOM_MODES = ['everyone', 'admin']
+// without an admin still answers as `everyone`. `auto`: a quick judgment (auto-reply.js)
+// picks who answers what the @mentions leave open; without one, the admin answers.
+export const ROOM_MODES = ['everyone', 'admin', 'auto']
 export const ROOM_NAME_MAX = 60
 export const ROOM_NOTICE_MAX = 2000
 export const ROOM_MAX_MEMBERS = 12

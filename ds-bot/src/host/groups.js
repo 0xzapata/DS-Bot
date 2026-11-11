@@ -429,6 +429,8 @@ export function install(rt) {
   // 2) when multiple callees work in parallel, `by` is woken once when the last callee
   //    in the batch finishes rather than woken piecemeal on every early reply.
   const roomBatches = new Map()
+  // Groups whose relay waits for a reply judgment before its round exists.
+  const relayJudging = new Set()
   const memberBatch = new Map()
   const batchKeyOf = (roomId, botId) => `${roomId}:${botId}`
 
@@ -610,7 +612,10 @@ export function install(rt) {
   // member still waiting is called once, with the newest note: an ordered call moves
   // it up the order, any other call lets it start at once. `by` is the calling member,
   // if a member called.
-  function callIn(round, callees, note, by, { ordered = false } = {}) {
+  // `fromBot`: a call a Bot's message made without naming anyone (an auto pick), counted
+  // by the idle guard as Bot-to-Bot. `tail`: ordered calls queue behind the ordered calls
+  // still waiting, so the owner's messages are answered in the order they came.
+  function callIn(round, callees, note, by, { ordered = false, fromBot = false, tail = false } = {}) {
     if (callees.length === 0) return
     round.batches = (round.batches ?? 0) + 1
     const batchKey = registerBatch(round.roomId, by, callees)
@@ -625,10 +630,12 @@ export function install(rt) {
       if (batchKey !== undefined) slot.batchKey = batchKey
       if (by === undefined) delete slot.by
       else slot.by = by
+      if (fromBot) slot.fromBot = true
       if (!moves) slot.ordered = false
       else if (!ordered) round.slots.push(slot)
       else {
         slot.ordered = true
+        if (tail && last === undefined) last = round.slots.findLast(other => other.ordered && other.status === 'waiting')
         const queue = round.slots.findIndex(other => other.ordered && other.status === 'waiting')
         round.slots.splice(last ? round.slots.indexOf(last) + 1 : queue === -1 ? round.slots.length : queue, 0, slot)
         last = slot
@@ -688,6 +695,30 @@ export function install(rt) {
     return lines
   })
 
+  // A judgment of who answers in an `auto` group (auto-reply.js), inside a running round:
+  // the round waits for it, the owner's picks apply in the order the messages came, and
+  // a Bot's picks are Bot-to-Bot calls with no caller to wake.
+  function judgeInto(room, round, signal, { text, fromBotId }) {
+    const owner = fromBotId === undefined
+    round.judging = (round.judging ?? 0) + 1
+    const busy = id => round.slots.some(slot => slot.id === id && (slot.status === 'speaking' || slot.status === 'waiting'))
+    const apply = (ids) => {
+      const note = owner ? 'new message from the user' : `${rt.botOf(fromBotId)?.name ?? 'A member'} posted in the group`
+      callIn(round, ids.map(rt.botOf).filter(Boolean), note, undefined, { ordered: owner, fromBot: !owner, tail: owner })
+    }
+    const judged = rt.autoRepliers(room, { text, fromBotId, signal, after: owner ? round.judged : undefined, busy, apply })
+      .catch(error => rt.warn('ds-bot: reply judgment in %s failed: %s', room.name, error))
+      .finally(() => { round.judging -= 1; round.nudge?.() })
+    if (owner) round.judged = judged
+  }
+  // The owner wrote: a new chain of auto picks starts, and a Bot's judgment still out is stale.
+  const ownerWrote = (room) => {
+    if (room.mode !== 'auto') return
+    room.autoEpoch = (room.autoEpoch ?? 0) + 1
+    delete room.autoTurns
+    delete room.autoHop
+  }
+
   // Messages the user sent while this round is running post into the log at once, so
   // every turn that starts from now on sees them. The members the message's own round
   // would open with answer it inside this round, as soon as they are free. Each message
@@ -698,6 +729,7 @@ export function install(rt) {
     const lines = waitingLines(agent).filter(line => agent.inbox.remove(line.id))
     if (lines.length === 0) return
     unpauseRoomIdle(room)
+    ownerWrote(room)
     round.userMessage = true
     rt.goalUserMessage?.(room.id)
     const members = room.members.map(rt.botOf).filter(Boolean)
@@ -706,8 +738,9 @@ export function install(rt) {
       round.replies.push({ kind: 'user', text: line.text, time: Date.now(), ...(line.via ? { via: line.via } : {}) })
       const { all, found } = mentionsIn(line.text, members)
       const note = all || found.length > 0 ? 'the user mentioned you' : 'new message from the user'
-      const { speakers, ordered } = openingCall(room, { text: line.text })
-      callIn(round, speakers, note, undefined, { ordered })
+      const { speakers, ordered, judge } = openingCall(room, { text: line.text })
+      if (judge) judgeInto(room, round, round.signal, { text: line.text })
+      else callIn(round, speakers, note, undefined, { ordered })
     }
     releaseParked(room, round)
     void rt.save().catch(() => {})
@@ -807,6 +840,7 @@ export function install(rt) {
     let due = true
     let wake = () => {}
     round.nudge = () => { due = true; wake() }
+    round.signal = signal
     signal.addEventListener('abort', round.nudge, { once: true })
     while (!signal.aborted) {
       if (!due) await new Promise((resolve) => { wake = resolve })
@@ -821,7 +855,7 @@ export function install(rt) {
         turns.add(turn)
       }
       // The greeting round leaves the user's messages for a round of their own.
-      if (turns.size === 0 && !round.slots.some(slot => slot.status === 'waiting') && (round.kickoff || waitingLines(agent).length === 0)) break
+      if (turns.size === 0 && !(round.judging > 0) && !round.slots.some(slot => slot.status === 'waiting') && (round.kickoff || waitingLines(agent).length === 0)) break
     }
     await Promise.allSettled([...turns])
     delete round.nudge
@@ -919,6 +953,10 @@ export function install(rt) {
       if (final !== undefined) {
         postInRound(room, round, member, final, Date.now() - startedAt, slot.by)
         callFrom(room, round, member, final, called, { worked, byBot: answeredBot })
+        // A reply that calls nobody in an `auto` group: a judgment may call members, but
+        // never for a status post or while the idle guard holds the group.
+        if (called.size === 0 && room.mode === 'auto' && room.idlePaused === undefined && !signal.aborted
+          && !isIdleRelayText(final, room.members.map(rt.botOf).filter(Boolean), [])) judgeInto(room, round, signal, { text: final, fromBotId: member.id })
       }
     } else {
       slot.status = reply === null ? 'cancelled' : typeof reply === 'string' ? 'passed' : 'missed'
@@ -1024,12 +1062,27 @@ export function install(rt) {
       // streak. Only the user's message lifts a pause already in place.
       const poster = opener.botId === undefined ? undefined : rt.botOf(opener.botId)
       const idlePost = poster !== undefined && !event(opener) && opener.quiet !== true && isIdleRelayText(opener.text ?? '', everyone, [])
-      if (posts.some(userPost)) unpauseRoomIdle(room)
+      if (posts.some(userPost)) {
+        unpauseRoomIdle(room)
+        ownerWrote(room)
+      }
       // The pause holds a status post back: it is not answered, and the members it named
       // wait for the user. A post with work in it goes ahead.
       const holdsPost = idlePost && room.idlePaused !== undefined
       const named = opener.botId === undefined ? [] : (mentionsOf(opener, everyone) ?? mentionsIn(opener.text ?? '', everyone)).found
-      const opened = openingCall(room, opener)
+      let opened = openingCall(room, opener)
+      // An `auto` group the rules left open: the judgment picks, before the round exists.
+      // A Bot post that lands meanwhile opens the next relay. Stop reaches it (stopRoomWork).
+      if (opened.judge && !holdsPost && !idlePost) {
+        relayJudging.add(room.id)
+        try {
+          const { ids } = await rt.autoRepliers(room, { text: opener.text ?? '', fromBotId: opener.botId, signal: exec.signal })
+          const live = rt.roomOf(room.id) ?? room
+          opened = { speakers: ids.filter(id => live.members.includes(id)).map(rt.botOf).filter(Boolean), ordered: opener.botId === undefined }
+        } finally {
+          relayJudging.delete(room.id)
+        }
+      }
       const speakers = holdsPost ? [] : opened.speakers
       const ordered = holdsPost ? false : opened.ordered
       const calledByOpener = speakers.filter(member => named.includes(member))
@@ -1257,6 +1310,7 @@ export function install(rt) {
     if (opener.late) return at(found.length > 0 ? found : members.filter(bot => bot.id === opener.askedBy))
     if (opener.member) return at(found)
     if (found.length > 0 && !all) return at(found)
+    if (!all && room.mode === 'auto') return { speakers: [], ordered: false, judge: true }
     if (!all && room.mode === 'admin' && admin) return at([admin])
     const speakers = admin ? [admin, ...members.filter(bot => bot !== admin)] : members
     return { speakers, ordered: !all && speakers.length > 1 }
@@ -1280,6 +1334,11 @@ export function install(rt) {
     if (!idlePost) clearIdleStreak(room)
     const opened = openingCall(room, post)
     if (idlePost && room.idlePaused !== undefined && holdIdleCalls(room, round, sender, opened.speakers, { named, all: (mentionsOf(post, everyone) ?? mentionsIn(text, everyone)).all === true })) return true
+    if (opened.judge) {
+      if (idlePost) return false
+      judgeInto(room, round, round.signal, { text, fromBotId: sender.id })
+      return true
+    }
     const { speakers, ordered } = opened
     if (speakers.length === 0) return false
     const by = speakers.filter(peer => named.includes(peer))
@@ -1491,7 +1550,7 @@ export function install(rt) {
         return false
       }
     }
-    const round = rt.roomBusy(room.id)
+    const round = rt.roomBusy(room.id) || relayJudging.has(room.id)
     if (round) await attempt(async () => (await rt.resolveAgent(rt.sessionOfRoom(room))).cancel({ kind: 'user' }))
     let stopped = false
     for (const botId of room.members) stopped = (await attempt(() => stopMemberWork(room.id, botId))) || stopped

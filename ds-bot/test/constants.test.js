@@ -16,5 +16,5 @@ test('colors and their legacy names agree', () => {
 })
 
 test('the reply modes are the ones the client offers', () => {
-  assert.deepEqual(ROOM_MODES, ['everyone', 'admin'])
+  assert.deepEqual(ROOM_MODES, ['everyone', 'admin', 'auto'])
 })

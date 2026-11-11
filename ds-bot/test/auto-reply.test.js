@@ -154,6 +154,8 @@ const waitFor = async (check, tries = 150) => {
   }
   return undefined
 }
+const roomTurns = sent => sent.filter(entry => entry.message.source.role === 'room')
+const nextTurn = (sent, seen) => waitFor(() => roomTurns(sent).find(entry => !seen.includes(entry)))
 
 // Chief (Main, admin), Writer, Coder, Tester; `mode` set on the group.
 async function team(env, { mode = 'auto', jev = true } = {}) {
@@ -169,6 +171,24 @@ async function team(env, { mode = 'auto', jev = true } = {}) {
   const ids = { Chief: chief, Writer: writer.id, Coder: coder.id, Tester: tester.id }
   const name = id => Object.keys(ids).find(key => ids[key] === id)
   return { room: rt.roomOf(room.id), ids, name }
+}
+
+// Runs a round: answers each turn with `reply(name, n)` until the relay ends; returns
+// the names that spoke, in order.
+async function playRound(env, roomId, reply, { signal, callId = 'relay' } = {}) {
+  const spoke = []
+  const seen = []
+  let done = false
+  const running = env.relay(roomId, callId, signal).then((value) => { done = true; return value })
+  for (;;) {
+    const entry = await waitFor(() => done || roomTurns(env.sent).find(each => !seen.includes(each)))
+    if (entry === undefined || entry === true) break
+    seen.push(entry)
+    const who = env.rt.botOf(env.whoseTurn(entry))?.name
+    spoke.push(who)
+    await env.answer(entry, reply(who, spoke.length))
+  }
+  return { spoke, result: JSON.parse(await running) }
 }
 
 // The judgment alone, on a room set to auto by hand.
@@ -204,4 +224,279 @@ test('autoRepliers: a Bot message needs the hop bar, skips busy members, and a p
   const second = await env.rt.autoRepliers(room, { text: 'private words', fromBotId: ids.Writer })
   assert.deepEqual(second, { ids: [], reason: 'private' })
   assert.equal(jev.length, 1)
+})
+
+test('1. admin and everyone groups never call Jev; a new group defaults to admin', async (t) => {
+  const jev = await fakeJev(t, () => ({ p: { Writer: 1, Coder: 1, Tester: 1, Chief: 1 } }))
+  for (const mode of ['admin', 'everyone']) {
+    const env = start(t)
+    const { room } = await team(env, { mode })
+    if (mode === 'admin') assert.equal(room.mode, 'admin')
+    await env.emit(room.id, env.userMessage('Hello team'))
+    const { spoke } = await playRound(env, room.id, name => `Hi from ${name}`)
+    assert.deepEqual(spoke, mode === 'admin' ? ['Chief'] : ['Chief', 'Writer', 'Coder', 'Tester'])
+  }
+  assert.equal(jev.length, 0)
+})
+
+test('2. owner message: one judgment with a noul per member; p >= 0.5 answer by p, at most 3', async (t) => {
+  const jev = await fakeJev(t, body => (body.state.from === 'user' ? { p: { Chief: 0.55, Writer: 0.9, Coder: 0.7, Tester: 0.6 } } : { p: {} }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Write the launch post'))
+  const { spoke } = await playRound(env, room.id, name => `Done, ${name} here with a draft of the launch post.`)
+  assert.deepEqual(spoke, ['Writer', 'Coder', 'Tester'])
+  const first = jev[0]
+  assert.deepEqual(Object.keys(first.questions), ['m0', 'm1', 'm2', 'm3'])
+  assert.ok(Object.values(first.questions).every(question => question.type === 'noul'))
+  assert.deepEqual(first.state, { message: 'Write the launch post', from: 'user', group: 'R1' })
+  assert.match(first.questions.m0.instructions, /^Should Chief \(Chief of Staff, the group's admin\) reply to `message` in this group chat\? Yes only if the message asks for it or it needs this member's role\.$/)
+  const line = env.audit()[0]
+  assert.equal(line.reason, 'jev')
+  assert.equal(line.from, 'user')
+  assert.equal(line.picked.length, 3)
+})
+
+test('3. an @mention in auto mode: no judgment, only the named member answers', async (t) => {
+  const jev = await fakeJev(t, () => ({ p: { Chief: 1, Writer: 1, Coder: 1, Tester: 1 } }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('@Coder fix the build'))
+  // A status reply is not judged either.
+  const { spoke } = await playRound(env, room.id, () => 'standby')
+  assert.deepEqual(spoke, ['Coder'])
+  assert.equal(jev.length, 0)
+})
+
+for (const [what, answer, jevOn] of [
+  ['HTTP 500', () => ({ status: 500 }), true],
+  ['Jev switch off', () => ({ p: { Writer: 1 } }), false],
+  ['timeout', () => ({ p: { Writer: 1 }, delayMs: 2500 }), true],
+]) {
+  test(`4. judgment null (${what}): the admin alone answers; audit null`, async (t) => {
+    const jev = await fakeJev(t, answer)
+    const env = start(t)
+    const { room } = await team(env, { jev: jevOn })
+    await env.emit(room.id, env.userMessage('Plan the week'))
+    const { spoke } = await playRound(env, room.id, () => 'Here is the plan for the week, in three steps.')
+    assert.deepEqual(spoke, ['Chief'])
+    if (!jevOn) assert.equal(jev.length, 0)
+    assert.equal(env.audit()[0].reason, 'null')
+    assert.deepEqual(env.audit()[0].picked, [env.rt.roomOf(room.id).admin])
+  })
+}
+
+test('5. every p below 0.5: the admin answers; audit below', async (t) => {
+  await fakeJev(t, () => ({ p: { Chief: 0.2, Writer: 0.4, Coder: 0.1, Tester: 0.3 } }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Any thoughts?'))
+  const { spoke } = await playRound(env, room.id, () => 'A few thoughts on the plan from me.')
+  assert.deepEqual(spoke, ['Chief'])
+  assert.equal(env.audit()[0].reason, 'below')
+  assert.deepEqual(env.audit()[1].reason, 'below', 'the reply judged with p 0.4 under the hop-1 bar')
+})
+
+test('6. hop 1 at p 0.65 calls the member; hop 2 at p 0.65 does not (bar 0.7)', async (t) => {
+  // The owner's message picks Writer; Writer's reply picks Coder at 0.65 (hop 1);
+  // Coder's reply would pick Tester at 0.65 (hop 2, bar 0.7): nobody.
+  await fakeJev(t, (body) => {
+    if (body.state.from === 'user') return { p: { Writer: 0.9 } }
+    if (body.state.from === 'Writer') return { p: { Coder: 0.65 } }
+    return { p: { Tester: 0.65 } }
+  })
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Draft the release notes'))
+  const { spoke } = await playRound(env, room.id, name => `${name}: my part of the release notes is ready to read.`)
+  assert.deepEqual(spoke, ['Writer', 'Coder'])
+  const audit = env.audit()
+  assert.deepEqual(audit.map(line => [line.from === 'user' ? 'user' : env.rt.botOf(line.from)?.name, line.hop, line.reason]), [['user', 0, 'jev'], ['Writer', 1, 'jev'], ['Coder', 2, 'below']])
+})
+
+test('7. Jev always yes: auto turns stop at 8 (cap); the next owner message resets; an @mention chain is not capped', async (t) => {
+  await fakeJev(t, () => ({ p: { Chief: 0.95, Writer: 0.95, Coder: 0.95, Tester: 0.95 } }))
+  const env = start(t)
+  const { room } = await team(env)
+  let n = 0
+  const reply = () => `Update number ${++n}: here is a new finding about the task.`
+  await env.emit(room.id, env.userMessage('Go'))
+  const first = await playRound(env, room.id, reply)
+  assert.equal(first.spoke.length, 8)
+  assert.ok(env.audit().some(line => line.reason === 'cap'))
+  assert.equal(env.rt.roomOf(room.id).autoTurns, 8)
+  // A new owner message resets the count.
+  env.sent.length = 0
+  await env.emit(room.id, env.userMessage('Again'))
+  const second = await playRound(env, room.id, reply, { callId: 'relay-2' })
+  assert.equal(second.spoke.length, 8)
+  // An @mention chain between Bots is not capped: 10 hops by name.
+  env.sent.length = 0
+  const order = ['Writer', 'Coder', 'Tester', 'Chief']
+  let hop = 0
+  await env.emit(room.id, env.userMessage('@Writer start the relay'))
+  const chain = await playRound(env, room.id, () => (++hop < 12 ? `@${order[hop % 4]} your go, step ${hop}` : 'All steps finished here.'), { callId: 'relay-3' })
+  assert.ok(chain.spoke.length >= 12, `spoke ${chain.spoke.length}`)
+})
+
+test('8. a Bot message with a null judgment: no reply, the round ends', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9 } } : { status: 500 }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Write a haiku'))
+  const { spoke } = await playRound(env, room.id, () => 'An old silent pond, a frog jumps into the pond.')
+  assert.deepEqual(spoke, ['Writer'])
+  assert.deepEqual(env.audit().map(line => line.reason), ['jev', 'null'])
+})
+
+test('9. a private member never reaches Jev: not in the questions, its reply makes no request, its text never sent', async (t) => {
+  const jev = await fakeJev(t, () => ({ p: { Chief: 0.9, Writer: 0.9, Coder: 0.9, Tester: 0.9 } }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  // A group cannot take a private Bot in; one that was a member before is still possible
+  // in saved data, so the record is set directly.
+  env.rt.botOf(ids.Tester).private = true
+  await env.emit(room.id, env.userMessage('@Tester share your notes'))
+  const secret = 'PRIVATE-DIARY-LINE about my secret plans'
+  const { spoke } = await playRound(env, room.id, name => (name === 'Tester' ? secret : 'Thanks for the notes, all good.'))
+  assert.deepEqual(spoke, ['Tester'])
+  assert.equal(jev.length, 0, 'a private Bot\'s reply makes no request')
+  assert.equal(env.audit().at(-1).reason, 'private')
+  // A plain owner message: Tester is not asked about.
+  env.sent.length = 0
+  await env.emit(room.id, env.userMessage('Who can help with copy?'))
+  await playRound(env, room.id, () => 'I can help with that.', { callId: 'relay-2' })
+  assert.ok(jev.length > 0)
+  for (const body of jev) {
+    assert.ok(Object.values(body.questions).every(question => !question.instructions.startsWith('Should Tester ')))
+    assert.ok(!JSON.stringify(body).includes(secret))
+  }
+})
+
+test('10. Stop during a pending judgment: nobody is called, the round ends, audit stopped', async (t) => {
+  await fakeJev(t, () => ({ p: { Writer: 0.9 }, delayMs: 1000 }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Think about this'))
+  const controller = new AbortController()
+  const running = env.relay(room.id, 'relay', controller.signal)
+  await settle(100)
+  // The relay judges before its round exists; the group's Stop still reaches it.
+  assert.equal(await env.rt.stopRoomWork(room.id), true)
+  assert.equal(env.cancelled.length, 1)
+  controller.abort()
+  await running
+  await settle(1100)
+  assert.equal(roomTurns(env.sent).length, 0)
+  assert.equal(env.audit()[0].reason, 'stopped')
+})
+
+test('10b. Stop during a judgment of a Bot reply inside the round: nobody is called, audit stopped', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9 } } : { p: { Coder: 0.9 }, delayMs: 1000 }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Draft it'))
+  const controller = new AbortController()
+  const running = env.relay(room.id, 'relay', controller.signal)
+  const first = await nextTurn(env.sent, [])
+  await env.answer(first, 'Here is the draft of the text you asked for.')
+  await settle(100)
+  controller.abort()
+  await running
+  await settle(1100)
+  assert.equal(roomTurns(env.sent).length, 1)
+  assert.equal(env.audit().at(-1).reason, 'stopped')
+})
+
+test('11. two owner messages whose judgments resolve in reverse order: replies in message order', async (t) => {
+  await fakeJev(t, (body) => {
+    if (body.state.message === 'first question') return { p: { Writer: 0.9 }, delayMs: 400 }
+    if (body.state.message === 'second question') return { p: { Coder: 0.9 }, delayMs: 50 }
+    return { p: {} }
+  })
+  const env = start(t)
+  const { room } = await team(env, { mode: 'admin' })
+  // A round is running (admin mode) when the two messages arrive; then the mode is auto.
+  await env.emit(room.id, env.userMessage('@Tester hold the floor'))
+  const running = env.relay(room.id, 'relay')
+  const holder = await nextTurn(env.sent, [])
+  await env.call('update-room', { id: room.id, mode: 'auto' })
+  await env.compose(room.id, 'first question')
+  await env.compose(room.id, 'second question')
+  await env.answer(holder, 'Holding the floor while you write.')
+  const seen = [holder]
+  const spoke = []
+  for (let i = 0; i < 2; i += 1) {
+    const entry = await nextTurn(env.sent, seen)
+    assert.ok(entry, `turn ${i}`)
+    seen.push(entry)
+    spoke.push(env.rt.botOf(env.whoseTurn(entry)).name)
+    await env.answer(entry, 'Answer to the question.')
+  }
+  await running
+  assert.deepEqual(spoke, ['Writer', 'Coder'])
+})
+
+test('12. a new owner message during a chain: the older Bot judgment is stale', async (t) => {
+  await fakeJev(t, (body) => {
+    if (body.state.from === 'Writer') return { p: { Coder: 0.95 }, delayMs: 400 }
+    if (body.state.message === 'new topic') return { p: { Tester: 0.9 } }
+    if (body.state.from === 'user') return { p: { Writer: 0.9 } }
+    return { p: {} }
+  })
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('start the chain'))
+  const running = env.relay(room.id, 'relay')
+  const first = await nextTurn(env.sent, [])
+  await env.answer(first, 'Writer has a long answer for the chain here.')
+  await settle(50)
+  await env.compose(room.id, 'new topic')
+  env.rt.nudgeRoom(room.id)
+  const second = await nextTurn(env.sent, [first])
+  assert.equal(env.rt.botOf(env.whoseTurn(second)).name, 'Tester')
+  await env.answer(second, 'Tester answers the new topic now.')
+  await running
+  assert.ok(env.audit().some(line => line.reason === 'stale' && env.rt.botOf(line.from)?.name === 'Writer'))
+  assert.ok(!roomTurns(env.sent).some(entry => env.rt.botOf(env.whoseTurn(entry)).name === 'Coder'))
+})
+
+test('13. the round waits for a pending judgment: the picked member answers in the same round', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9 } } : body.state.from === 'Writer' ? { p: { Coder: 0.9 }, delayMs: 600 } : { p: {} }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Plan it'))
+  const { spoke } = await playRound(env, room.id, name => `${name} has a detailed plan for the next step.`)
+  assert.deepEqual(spoke, ['Writer', 'Coder'])
+})
+
+test('14. mode changed from auto to admin during a pending judgment: the pick is not applied', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9 } } : { p: { Coder: 0.9 }, delayMs: 500 }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Begin'))
+  const running = env.relay(room.id, 'relay')
+  const first = await nextTurn(env.sent, [])
+  await env.answer(first, 'Writer replies with a full answer here.')
+  await settle(50)
+  await env.call('update-room', { id: room.id, mode: 'admin' })
+  // Past the judgment: a wrong pick would have called Coder by now.
+  await settle(700)
+  assert.equal(roomTurns(env.sent).length, 1)
+  assert.equal(env.audit().at(-1).reason, 'stopped')
+  await running
+})
+
+test('15. the audit never holds message text', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9, Coder: 0.6 } } : { p: { Tester: 0.8 } }))
+  const env = start(t)
+  const { room } = await team(env)
+  const words = ['zebra-owner-text', 'quokka-writer-text', 'axolotl-coder-text', 'narwhal-tester-text']
+  await env.emit(room.id, env.userMessage(`Please answer ${words[0]}`))
+  await playRound(env, room.id, name => `Answer with ${{ Writer: words[1], Coder: words[2], Tester: words[3] }[name] ?? 'nothing'} from me`)
+  await settle(50)
+  const raw = readFileSync(join(env.home, 'reply-audit.jsonl'), 'utf8')
+  assert.ok(raw.length > 0)
+  for (const word of words) assert.ok(!raw.includes(word), word)
+  for (const line of env.audit()) assert.deepEqual(Object.keys(line).sort(), ['from', 'hop', 'p', 'picked', 'reason', 'room', 'time'])
 })
