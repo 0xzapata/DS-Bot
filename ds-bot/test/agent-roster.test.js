@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { EMPTY_ROSTER, indexRoster, isAgentSession } from '../src/client/sources.js'
+import { EMPTY_ROSTER, createSource, indexRoster, isAgentSession, onRunningChange } from '../src/client/sources.js'
 import { groupsFor } from '../src/client/surface.js'
 
 const ROSTER_VALUE = {
@@ -50,4 +50,21 @@ test('isAgentSession follows the roster first, the cache before it is ready', ()
 test('the plain flag maps to the mounted groups', () => {
   assert.deepEqual(groupsFor({ mode: 'bot', plain: isAgentSession(indexRoster(ROSTER_VALUE), new Set(), 's1') }), { shell: true, conversation: false })
   assert.deepEqual(groupsFor({ mode: 'bot', plain: isAgentSession(indexRoster(ROSTER_VALUE), new Set(), 'm1') }), { shell: true, conversation: true })
+})
+
+test('a Session that starts or stops running is reported, other list changes are not', () => {
+  const list = createSource({ byId: { b: { id: 'b', running: false, updatedAt: 1 } } })
+  const seen = []
+  const off = onRunningChange(list, () => seen.push(Object.values(list.getSnapshot().byId).map(row => row.running)))
+  list.set({ byId: { b: { id: 'b', running: false, updatedAt: 2 } } })
+  assert.equal(seen.length, 0)
+  list.set({ byId: { b: { id: 'b', running: true, updatedAt: 2 } } })
+  list.set({ byId: { b: { id: 'b', running: false, updatedAt: 2 } } })
+  // A Session that appears already running counts; one that leaves the list does not.
+  list.set({ byId: { b: { id: 'b', running: false, updatedAt: 2 }, c: { id: 'c', running: true } } })
+  list.set({ byId: { b: { id: 'b', running: false, updatedAt: 2 } } })
+  assert.deepEqual(seen, [[true], [false], [false, true]])
+  off()
+  list.set({ byId: { b: { id: 'b', running: true } } })
+  assert.equal(seen.length, 3)
 })

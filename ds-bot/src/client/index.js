@@ -1,7 +1,7 @@
 import { call } from './api.js'
 import { isHex, inkText, paintCss } from './inks.js'
 import { DEFAULT_MASK, SHAPES, markupCache, maskOf } from './characters.js'
-import { createSource, EMPTY_ROSTER, indexRoster, isAgentSession } from './sources.js'
+import { createSource, EMPTY_ROSTER, indexRoster, isAgentSession, onRunningChange } from './sources.js'
 import { teamActions } from './team-actions.js'
 import { themeCss, shellTokens, registry, registerShape, registerTheme, allThemes, layoutOf, widthOf, flatWidthOf } from './themes.js'
 import { MENTION_ORIGIN, currentPart } from './text.js'
@@ -260,6 +260,10 @@ export function apply(ctx) {
     void loop()
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener('visibilitychange', wake) }
   }, 'ds-bot: roster poll')
+  // The host changes a Bot without a call from this window (an Auto model pick, a turn
+  // that ends): DSH pushes each Session's running state at once, so the window asks
+  // then instead of waiting for the poll, which slows to 10 s while it is hidden.
+  ctx.effect(() => onRunningChange(ctx.sessions.list, () => void pull().catch(() => {})), 'ds-bot: pull when a Session starts or stops')
 
   // Plugin updates: every window that opens asks the host once (the host keeps its
   // answer for a while), again each hour, and every two seconds while installing.

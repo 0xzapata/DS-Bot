@@ -44,6 +44,19 @@ export function indexRoster(value) {
   return { ...value, agents: value.agents ?? [], sections: value.sections ?? [], byId, roomsById, agentsById, agentOf, ready: true }
 }
 
+// Calls `listener` when a Session in DSH's live Session list starts or stops running,
+// which DSH pushes at once; other list changes are ignored. Returns the unsubscribe.
+export function onRunningChange(list, listener) {
+  const running = id => list.getSnapshot().byId?.[id]?.running === true
+  let seen = new Set(Object.keys(list.getSnapshot().byId ?? {}).filter(running))
+  return list.subscribe(() => {
+    const now = new Set(Object.keys(list.getSnapshot().byId ?? {}).filter(running))
+    const changed = [...now].some(id => !seen.has(id)) || [...seen].some(id => !now.has(id) && list.getSnapshot().byId?.[id] !== undefined)
+    seen = now
+    if (changed) listener()
+  })
+}
+
 // Whether a main-view Session id belongs to the team's DSH Agent: the conversation
 // group then stays withdrawn while the shell keeps the sidebar. Before the roster
 // arrives, the ids cached from the last pull answer.

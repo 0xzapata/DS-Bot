@@ -353,3 +353,30 @@ test('a Bot on Auto shows Auto and the model it runs on now; without Auto, its o
   assert.equal(label({ id: 'b', name: 'B', model: 'official/flash', appliedModel: 'official/pro', auto: true }), 'Auto · DeepSeek Pro')
   assert.equal(label({ id: 'b', name: 'B', model: 'official/flash', appliedModel: 'official/pro' }), 'DeepSeek Flash')
 })
+
+// The menu's own button rule must not reach the Auto switch: stretched to the row, it
+// left the hint one word wide (live check, 2026-11-11).
+test('the Auto switch in the model menu keeps its own size and track', async () => {
+  const { createRequire } = await import('node:module')
+  const { join } = await import('node:path')
+  const { JSDOM } = createRequire(join(process.env.DSH_HARNESS, 'package.json'))('jsdom')
+  const css = await build({
+    stdin: {
+      contents: "export { SHELL_CSS } from './src/client/styles.js'\nexport { BOT_SETTINGS_CSS } from './src/client/bot-settings.js'\nexport { MODEL_CSS } from './src/client/model-menu.js'",
+      resolveDir: fileURLToPath(new URL('..', import.meta.url)),
+    },
+    bundle: true, format: 'cjs', platform: 'node', write: false,
+    external: ['react', 'react-dom', '@deepseek-ai/dsh-client-ui-primitives'],
+  })
+  const loaded = { exports: {} }
+  runInNewContext(css.outputFiles[0].text, { ...sandbox, module: loaded, exports: loaded.exports })
+  const { SHELL_CSS, BOT_SETTINGS_CSS, MODEL_CSS } = loaded.exports
+  const dom = new JSDOM(`<style>${SHELL_CSS}${MODEL_CSS}${BOT_SETTINGS_CSS}</style>
+    <div class="bt-menu bt-model-menu"><div class="bt-model-auto"><span class="bt-set-copy"><span class="bt-bs-label">Auto</span><span class="bt-set-hint">Picks a model</span></span>
+    <button type="button" role="switch" class="bt-switch" aria-checked="false"><span class="bt-switch-knob"></span></button></div></div>`)
+  const style = dom.window.getComputedStyle(dom.window.document.querySelector('.bt-switch'))
+  assert.equal(style.width, '36px')
+  assert.equal(style.paddingLeft, '0px')
+  assert.equal(style.minHeight, '0px')
+  assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector('.bt-model-auto .bt-set-copy')).flexGrow, '1')
+})

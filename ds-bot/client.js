@@ -2078,6 +2078,16 @@ function indexRoster(value) {
   }
   return { ...value, agents: value.agents ?? [], sections: value.sections ?? [], byId, roomsById, agentsById, agentOf, ready: true };
 }
+function onRunningChange(list, listener) {
+  const running = (id) => list.getSnapshot().byId?.[id]?.running === true;
+  let seen = new Set(Object.keys(list.getSnapshot().byId ?? {}).filter(running));
+  return list.subscribe(() => {
+    const now = new Set(Object.keys(list.getSnapshot().byId ?? {}).filter(running));
+    const changed = [...now].some((id) => !seen.has(id)) || [...seen].some((id) => !now.has(id) && list.getSnapshot().byId?.[id] !== void 0);
+    seen = now;
+    if (changed) listener();
+  });
+}
 function isAgentSession(roster, cache, sessionId) {
   if (sessionId === void 0 || sessionId === null || sessionId === "") return false;
   if (roster.ready) return roster.agentOf[sessionId] !== void 0;
@@ -9988,6 +9998,8 @@ var MODEL_CSS = `
 .bt-model-foot{flex:none;display:flex;flex-direction:column;gap:2px;padding:4px 6px 6px;border-top:.5px solid var(--bt-line-2)}
 .bt-model-auto{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border-bottom:.5px solid var(--bt-line-2)}
 .bt-model-auto .bt-set-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.bt-menu .bt-model-auto .bt-switch{display:block;width:36px;height:20px;min-height:0;padding:0;border-radius:999px;background:var(--bt-line-2)}
+.bt-menu .bt-model-auto .bt-switch[aria-checked=true]{background:var(--bt-accent)}
 .bt-effort-bar{display:flex;flex-direction:column;gap:6px;padding:4px 6px 5px}
 .bt-effort-head{display:flex;align-items:center;justify-content:space-between;gap:8px;height:18px;padding:0 2px}
 .bt-effort-label{font-size:11px;line-height:14px;font-weight:500;color:var(--bt-ink-3)}
@@ -29263,6 +29275,8 @@ function apply(ctx) {
       document.removeEventListener("visibilitychange", wake);
     };
   }, "ds-bot: roster poll");
+  ctx.effect(() => onRunningChange(ctx.sessions.list, () => void pull().catch(() => {
+  })), "ds-bot: pull when a Session starts or stops");
   const update = createSource({ available: false, phase: "idle" });
   let wakeUpdate = () => {
   };
