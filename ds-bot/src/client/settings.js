@@ -173,7 +173,7 @@ function GeneralPage({ roster, actions, run, dsh }) {
       h(SetRow, { label: t('Enter sends message') },
         h(Switch, { label: t('Enter sends message'), on: prefs.enterToSend !== false, onChange: enterToSend => run(actions.setPrefs({ enterToSend })) }))),
     h(SetSection, { key: 'jev', title: t('Quick judgments') },
-      h(SetRow, { label: t('Use Jev for quick judgments'), hint: t('When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.') },
+      h(SetRow, { label: t('Use Jev for quick judgments'), hint: t('When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto and to pick who answers in groups set to Auto.') },
         h(Switch, { label: t('Use Jev for quick judgments'), on: prefs.jev === true, onChange: jev => run(actions.setPrefs({ jev })) })),
       h(SetRow, { label: t('TypeSafe API key'), hint: roster.jevKey?.set ? t('A key is set.') : t('No key yet. You can also set TYPESAFE_API_KEY.') },
         h(JevKey, { set: roster.jevKey?.set === true, writable: roster.jevKey?.writable === true, actions, run }))),

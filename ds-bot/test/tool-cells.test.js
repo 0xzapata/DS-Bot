@@ -785,6 +785,16 @@ test('a pruned group relay still draws the replies that survived', () => {
   assert.match(text(gone), /The group replies could not be shown/)
 })
 
+// A Stop (here during an Auto group's judgment) makes DSH replace the relay's result with
+// its abort error: nothing to show, and no failure line either.
+test('a stopped group relay shows no failure line', () => {
+  const error = { name: 'AbortError', code: 'ABORTED' }
+  const out = show(call('group_relay', 'direct', { content: 'Error: tool call aborted', isError: true, error }), { sessionId: 'room' })
+  assert.doesNotMatch(text(out), /could not be shown/)
+  const failed = show(call('group_relay', 'direct', { content: 'Error: boom', isError: true, error: { name: 'Error' } }), { sessionId: 'room' })
+  assert.match(text(failed), /The group replies could not be shown/)
+})
+
 // The prune marker's "]" must not end the scan, and a cut inside a string must
 // not hide the replies after it either.
 test('a group relay recovers replies after the prune marker', () => {

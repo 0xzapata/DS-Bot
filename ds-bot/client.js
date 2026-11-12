@@ -770,7 +770,7 @@ var ZH = {
   // Quick judgments (TypeSafe Jev) and Auto model
   "Quick judgments": "快速判断",
   "Use Jev for quick judgments": "用 Jev 做快速判断",
-  "When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.": "开启后，你的部分消息会发送给 TypeSafe，用于为设为“自动”的 Bot 选择模型。",
+  "When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto and to pick who answers in groups set to Auto.": "开启后，你的部分消息会发送给 TypeSafe，用于为设为“自动”的 Bot 选择模型，以及在设为“自动”的群聊中选择谁来回复。",
   "TypeSafe API key": "TypeSafe API 密钥",
   "A key is set.": "已设置密钥。",
   "No key yet. You can also set TYPESAFE_API_KEY.": "还没有密钥。也可以设置环境变量 TYPESAFE_API_KEY。",
@@ -14848,7 +14848,7 @@ function RelayEvent({ reply, bot, sessionId, actions }) {
   }
   return null;
 }
-function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi, useWork }) {
+function GroupReplies({ sessionId, callId, done, content, error, roster, actions, useUi, useWork }) {
   const [live, setLive] = (0, import_react32.useState)({ replies: [], speaking: [] });
   (0, import_react32.useEffect)(() => {
     if (done) return void 0;
@@ -14877,7 +14877,7 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
   if (done) {
     const parsed = parseReplies(contentText(content));
     replies = parsed.replies.length ? parsed.replies : live.replies;
-    broken = parsed.broken;
+    broken = parsed.broken && error?.name !== "AbortError";
   }
   const pending = done ? [] : live.speaking;
   const doing = JSON.parse(useWork?.((work) => JSON.stringify(pending.map((id) => {
@@ -14978,7 +14978,7 @@ function renderCall(call2, { sessionId, roster, actions, useUi, useWork, findBot
       return done && target ? (0, import_react32.createElement)(EventLine, { prefix: t("Updated"), bots: [target], onOpen: (bot) => actions.openSession(bot.id) }) : (0, import_react32.createElement)(CellEmpty);
     }
     case "group_relay":
-      return (0, import_react32.createElement)(GroupReplies, { sessionId, callId: call2.callId, done, content: call2.content, roster, actions, useUi, useWork });
+      return (0, import_react32.createElement)(GroupReplies, { sessionId, callId: call2.callId, done, content: call2.content, error: call2.error, roster, actions, useUi, useWork });
     case "create_group":
     case "update_group":
     case "delete_group":
@@ -22068,7 +22068,7 @@ function GeneralPage({ roster, actions, run: run2, dsh }) {
       { key: "jev", title: t("Quick judgments") },
       (0, import_react47.createElement)(
         SetRow,
-        { label: t("Use Jev for quick judgments"), hint: t("When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.") },
+        { label: t("Use Jev for quick judgments"), hint: t("When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto and to pick who answers in groups set to Auto.") },
         (0, import_react47.createElement)(Switch, { label: t("Use Jev for quick judgments"), on: prefs.jev === true, onChange: (jev) => run2(actions.setPrefs({ jev })) })
       ),
       (0, import_react47.createElement)(

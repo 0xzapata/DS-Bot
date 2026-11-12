@@ -711,7 +711,7 @@ const ZH = {
   // Quick judgments (TypeSafe Jev) and Auto model
   'Quick judgments': '快速判断',
   'Use Jev for quick judgments': '用 Jev 做快速判断',
-  'When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto.': '开启后，你的部分消息会发送给 TypeSafe，用于为设为“自动”的 Bot 选择模型。',
+  'When this is on, parts of your messages are sent to TypeSafe to pick a model for Bots set to Auto and to pick who answers in groups set to Auto.': '开启后，你的部分消息会发送给 TypeSafe，用于为设为“自动”的 Bot 选择模型，以及在设为“自动”的群聊中选择谁来回复。',
   'TypeSafe API key': 'TypeSafe API 密钥',
   'A key is set.': '已设置密钥。',
   'No key yet. You can also set TYPESAFE_API_KEY.': '还没有密钥。也可以设置环境变量 TYPESAFE_API_KEY。',

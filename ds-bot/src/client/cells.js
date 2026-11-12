@@ -988,7 +988,7 @@ function RelayEvent({ reply, bot, sessionId, actions }) {
   return null
 }
 
-function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi, useWork }) {
+function GroupReplies({ sessionId, callId, done, content, error, roster, actions, useUi, useWork }) {
   const [live, setLive] = useState({ replies: [], speaking: [] })
   useEffect(() => {
     if (done) return undefined
@@ -1011,7 +1011,9 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
   if (done) {
     const parsed = parseReplies(contentText(content))
     replies = parsed.replies.length ? parsed.replies : live.replies
-    broken = parsed.broken
+    // A Stop makes DSH replace the relay's result with its own abort error: a stopped
+    // round, not a lost one.
+    broken = parsed.broken && error?.name !== 'AbortError'
   }
   // Every member answering in the round is typing; what each is doing comes as text,
   // so the cell redraws only when that changes.
@@ -1113,7 +1115,7 @@ function renderCall(call, { sessionId, roster, actions, useUi, useWork, findBot,
       return done && target ? h(EventLine, { prefix: t('Updated'), bots: [target], onOpen: bot => actions.openSession(bot.id) }) : h(CellEmpty)
     }
     case 'group_relay':
-      return h(GroupReplies, { sessionId, callId: call.callId, done, content: call.content, roster, actions, useUi, useWork })
+      return h(GroupReplies, { sessionId, callId: call.callId, done, content: call.content, error: call.error, roster, actions, useUi, useWork })
     case 'create_group':
     case 'update_group':
     case 'delete_group':
