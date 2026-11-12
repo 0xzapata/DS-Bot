@@ -80,6 +80,8 @@ export function install(rt) {
     const live = rt.roomOf(room.id)
     if (signal?.aborted || live === undefined) return done([], 'stopped')
     if (!owner && live.autoEpoch !== epoch) return done([], 'stale')
+    // Each owner message starts the count of Bot-to-Bot turns again, in message order.
+    if (owner) delete live.autoTurns
     // A mode changed away from `auto` is the owner's: the pick is not applied.
     if (live.mode !== 'auto') return fallback('stopped', live)
     if (state.prefs?.jev !== true || answers == null) return fallback('null', live)
@@ -91,13 +93,14 @@ export function install(rt) {
       .filter(id => live.members.includes(id) && rt.botOf(id) !== undefined && p[id] >= bar && (owner || !busy(id)))
       .sort((a, b) => p[b] - p[a])
     if (ranked.length === 0) return owner ? done(ownerDefault(live), 'below', { p }) : done([], 'below', { hop, p })
+    if (owner) return done(ranked.slice(0, OWNER_MAX), 'jev', { p })
     // Taken at pick time, not when the judgment started, so two judgments in flight
     // cannot both spend the same turns.
     const left = AUTO_TURN_CAP - (live.autoTurns ?? 0)
     if (left <= 0) return done([], 'cap', { hop, p })
-    const ids = ranked.slice(0, Math.min(owner ? OWNER_MAX : BOT_MAX, left))
+    const ids = ranked.slice(0, Math.min(BOT_MAX, left))
     live.autoTurns = (live.autoTurns ?? 0) + ids.length
-    if (!owner) live.autoHop = hop
+    live.autoHop = hop
     return done(ids, 'jev', { hop, p })
   }
 

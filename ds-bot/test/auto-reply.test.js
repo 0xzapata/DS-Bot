@@ -192,7 +192,7 @@ async function playRound(env, roomId, reply, { signal, callId = 'relay' } = {}) 
 }
 
 // The judgment alone, on a room set to auto by hand.
-test('autoRepliers: owner picks by p, at most 3, the cap taken at pick time; audit without text', async (t) => {
+test('autoRepliers: owner picks by p, at most 3, never capped, and reset the turn count; audit without text', async (t) => {
   const jev = await fakeJev(t, () => ({ p: { Chief: 0.2, Writer: 0.9, Coder: 0.7, Tester: 0.6 } }))
   const env = start(t)
   const { room, ids } = await team(env, { mode: 'admin' })
@@ -201,9 +201,9 @@ test('autoRepliers: owner picks by p, at most 3, the cap taken at pick time; aud
   const applied = []
   const { ids: picked, reason } = await env.rt.autoRepliers(room, { text: 'owner-secret-words', apply: list => applied.push(list) })
   assert.equal(reason, 'jev')
-  assert.deepEqual(picked, [ids.Writer, ids.Coder], 'two turns left under the cap')
+  assert.deepEqual(picked, [ids.Writer, ids.Coder, ids.Tester], 'the cap is for Bot-to-Bot turns only')
   assert.deepEqual(applied, [picked])
-  assert.equal(room.autoTurns, 8)
+  assert.equal(room.autoTurns, undefined)
   assert.equal(jev.length, 1)
   assert.equal(Object.keys(jev[0].questions).length, 4)
   await waitFor(() => env.audit().length === 1)
@@ -314,7 +314,7 @@ test('6. hop 1 at p 0.65 calls the member; hop 2 at p 0.65 does not (bar 0.7)', 
   assert.deepEqual(audit.map(line => [line.from === 'user' ? 'user' : env.rt.botOf(line.from)?.name, line.hop, line.reason]), [['user', 0, 'jev'], ['Writer', 1, 'jev'], ['Coder', 2, 'below']])
 })
 
-test('7. Jev always yes: auto turns stop at 8 (cap); the next owner message resets; an @mention chain is not capped', async (t) => {
+test('7. Jev always yes: 3 owner picks, then Bot-to-Bot turns stop at 8 (cap); the next owner message resets; an @mention chain is not capped', async (t) => {
   await fakeJev(t, () => ({ p: { Chief: 0.95, Writer: 0.95, Coder: 0.95, Tester: 0.95 } }))
   const env = start(t)
   const { room } = await team(env)
@@ -322,14 +322,14 @@ test('7. Jev always yes: auto turns stop at 8 (cap); the next owner message rese
   const reply = () => `Update number ${++n}: here is a new finding about the task.`
   await env.emit(room.id, env.userMessage('Go'))
   const first = await playRound(env, room.id, reply)
-  assert.equal(first.spoke.length, 8)
+  assert.equal(first.spoke.length, 3 + 8)
   assert.ok(env.audit().some(line => line.reason === 'cap'))
   assert.equal(env.rt.roomOf(room.id).autoTurns, 8)
   // A new owner message resets the count.
   env.sent.length = 0
   await env.emit(room.id, env.userMessage('Again'))
   const second = await playRound(env, room.id, reply, { callId: 'relay-2' })
-  assert.equal(second.spoke.length, 8)
+  assert.equal(second.spoke.length, 3 + 8)
   // An @mention chain between Bots is not capped: 10 hops by name.
   env.sent.length = 0
   const order = ['Writer', 'Coder', 'Tester', 'Chief']
@@ -503,6 +503,23 @@ test('15. the audit never holds message text', async (t) => {
 
 // A Bot's plain post into the group's own Session, as post_to_group sends it.
 const postEvent = (ids, name, text) => ({ type: 'user/message', data: { source: { kind: 'bot', role: 'post', senderSessionId: ids[name], senderName: name, exchangeId: randomUUID() }, content: [{ type: 'text', text: `[Group post from ${name}]\n${text}` }] } })
+// Answers every turn of a running relay until it ends; `onTurn(entry, name, n)` may act first.
+async function drive(env, running, reply, onTurn = async () => {}) {
+  let done = false
+  running.then(() => { done = true }, () => { done = true })
+  const seen = []
+  const spoke = []
+  for (;;) {
+    const entry = await waitFor(() => done || roomTurns(env.sent).find(each => !seen.includes(each)))
+    if (entry === undefined || entry === true) break
+    seen.push(entry)
+    const who = env.rt.botOf(env.whoseTurn(entry))?.name
+    spoke.push(who)
+    await onTurn(entry, who, spoke.length)
+    await env.answer(entry, reply(who, spoke.length))
+  }
+  return spoke
+}
 const nameOf = (env, line) => (line.from === 'user' ? 'user' : env.rt.botOf(line.from)?.name)
 
 test('16. an owner message and a Main Bot post in one relay, Jev null: the owner message still gets the default', async (t) => {
@@ -528,3 +545,25 @@ test('17. an owner message and a Bot post in one relay, Jev answering: the owner
   assert.ok(jev.some(body => body.state.from === 'user' && body.state.message === 'Please plan the launch for Friday'))
   assert.equal(spoke[0], 'Writer')
 })
+
+for (const count of [4, 5]) {
+  test(`18. ${count} owner messages drained in one pass, Jev always yes: each gets a member; autoTurns counts only Bot-to-Bot picks`, async (t) => {
+    await fakeJev(t, () => ({ p: { Writer: 0.95, Coder: 0.9, Tester: 0.85, Chief: 0.8 } }))
+    const env = start(t)
+    const { room } = await team(env, { mode: 'admin' })
+    await env.emit(room.id, env.userMessage('@Tester hold the floor'))
+    const running = env.relay(room.id, 'relay')
+    const holder = await nextTurn(env.sent, [])
+    await env.call('update-room', { id: room.id, mode: 'auto' })
+    for (let n = 1; n <= count; n += 1) await env.compose(room.id, `question number ${n}`)
+    await env.answer(holder, 'Holding the floor while you write.')
+    await drive(env, running, (name, n) => `${name} answers part ${n} of the questions in full.`)
+    const audit = env.audit()
+    const owner = audit.filter(line => line.from === 'user')
+    assert.equal(owner.length, count)
+    assert.ok(owner.every(line => line.picked.length > 0 && line.reason !== 'cap'), JSON.stringify(owner.map(line => line.reason)))
+    const last = audit.findLastIndex(line => line.from === 'user')
+    const botPicks = audit.slice(last + 1).filter(line => line.reason === 'jev').reduce((sum, line) => sum + line.picked.length, 0)
+    assert.equal(env.rt.roomOf(room.id).autoTurns ?? 0, botPicks)
+  })
+}
