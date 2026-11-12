@@ -26,6 +26,11 @@ export function linesFor({ window, reserve, checkRatio }) {
   return { window: declared, usable, hard, check: Math.min(Math.floor(usable * ratio), hard) }
 }
 
+// A Bot's own chat writes its next checkpoint ahead, in the background, from this size
+// on: halfway from where the part last started (`base`) to the check line, and at most
+// 60,000 tokens before it.
+export const draftLine = (check, base = 0) => check - Math.min(60_000, Math.floor((check - base) / 2))
+
 export const STEWARD_SYSTEM = [
   'You are the context steward of an AI assistant\'s long-running conversation. The conversation has grown long, and room has to be made now in one of two ways. You choose which.',
   '',

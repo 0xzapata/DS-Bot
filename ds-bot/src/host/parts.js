@@ -19,7 +19,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { openTurnAt } from './btw.js'
 import { HANDOFF_ACK, HISTORY_TIMEOUT_MS, REPLY_KIND, SOURCE_KIND } from './constants.js'
 import { parseReplies, stackReplies } from '../shared/group-replies.js'
-import { CHECKPOINT_PROMPT, STEWARD_SYSTEM, checkpointCount, checkpointTail, checkpointTailNote, checkpointText, linesFor, parseDecision, stewardRequest } from './steward.js'
+import { CHECKPOINT_PROMPT, STEWARD_SYSTEM, checkpointCount, checkpointTail, checkpointTailNote, checkpointText, draftLine, linesFor, parseDecision, stewardRequest } from './steward.js'
 import { RESUME_DELAY_MS } from './resume.js'
 import { createDrafts } from './draft.js'
 import { clip, createClock, escapeRegExp, estimateTokens, splitRef, textOf } from './text.js'
@@ -1555,7 +1555,14 @@ export function install(rt) {
     if (drafts.marked(agent.id)) return
     const lines = await contextLines(agent.session)
     const tokens = tokensOf(agent.session)
-    if (lines === undefined || tokens === undefined || tokens < lines.check || !grown(agent.id, tokens, lines)) return
+    if (lines === undefined || tokens === undefined) return
+    // From the draft line on, after a turn that ended well, a Bot's own chat writes its
+    // checkpoint ahead, so it is ready when the steward is asked at the check line.
+    if (tokens < lines.check) {
+      if (tokens >= draftLine(lines.check, partBase.get(agent.id)) && lastTurnEnd(agent)?.data?.reason?.kind === 'completed' && ownChat(agent)) drafts.start(agent)
+      return
+    }
+    if (!grown(agent.id, tokens, lines)) return
     const hard = tokens >= lines.hard
     if (!hard && Date.now() < (noteFailures.get(agent.id)?.until ?? 0)) return
     checking.add(agent.id)

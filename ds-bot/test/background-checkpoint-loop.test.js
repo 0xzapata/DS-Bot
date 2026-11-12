@@ -183,7 +183,8 @@ test('stage 1: the checkpoint is written in the background and applied at the ne
   assert.equal(draft.sessionId, 'b')
   assert.equal(b.kinds('checkpoint')[0].phase, 'idle', 'written outside maintenance')
   assert.deepEqual(b.env.usage.filter(([, kind]) => kind === 'checkpoint'), [['label', 'checkpoint']])
-  const turn = b.kinds('turn').at(-1).options
+  // The turn just before the draft (from the draft line on, that is before the check line).
+  const turn = b.kinds('turn').filter(call => call.at < b.kinds('checkpoint')[0].at).at(-1).options
   const sent = draft.messages.slice(0, -1).map(message => [message.role, textOf(message)])
   const asked = turn.messages.map(message => [message.role, textOf(message)])
   assert.equal(draft.messages[0].role, 'system')
@@ -303,16 +304,16 @@ test('a checkpoint that leaves the part too large is not used', async (t) => {
 
 // 9. A failed draft: the same check falls back to the idle condense, as before (the
 // count of failures in a row is in the unit test below).
-test('a failed draft falls back to the idle condense', async (t) => {
+test('failed drafts fall back to the idle condense', async (t) => {
   const b = await boot(t)
-  b.env.checkpointFail = 1
+  b.env.checkpointFail = 2
   await grow(b)
-  await settle(() => b.kinds('checkpoint').length === 2)
+  await settle(() => b.types().includes('compaction/end'))
   await b.quiet()
-  assert.deepEqual(b.kinds('checkpoint').map(call => call.phase), ['idle', 'maintenance'])
-  assert.ok(b.types().includes('compaction/end'))
+  // Two background attempts failed; no third started; the check condensed in maintenance.
+  assert.deepEqual(b.kinds('checkpoint').map(call => call.phase), ['idle', 'idle', 'maintenance'])
   assert.ok(b.balanced())
-  assert.equal(b.env.warnings.filter(line => /background checkpoint for b failed \(1 in a row\)/.test(line)).length, 1)
+  assert.equal(b.env.warnings.filter(line => /background checkpoint for b failed/.test(line)).length, 2)
 })
 
 // 10. A model change between the draft and the apply: lines for the new route.
@@ -405,14 +406,20 @@ test('a deleted Bot: its stopped Session drops the draft, and nothing is written
 })
 
 // 12. The steward says "switch": no draft; the switch goes on as before.
-test('the steward says switch: no checkpoint is drafted', async (t) => {
+test('the steward says switch: the early draft is dropped and never applied', async (t) => {
   const b = await boot(t)
   b.env.steward = 'switch'
+  b.env.gateOn()
   await grow(b)
   await settle(() => b.kinds('steward').length === 1)
-  await b.quiet()
-  await tick(50)
-  assert.equal(b.kinds('checkpoint').length, 0)
+  // Made ahead from the draft line, before the steward was asked.
+  assert.equal(b.kinds('checkpoint').length, 1)
+  assert.ok(b.kinds('checkpoint')[0].at < b.kinds('steward')[0].at)
+  await settle(() => b.kinds('checkpoint')[0].options.signal.aborted)
+  b.env.gateOff()
+  await b.say('next')
+  assert.equal(b.types().includes('compaction/start'), false)
+  assert.equal(b.kinds('checkpoint').length, 1)
 })
 
 // 13. No draft for a group Session, a local agent, or read-only mode.
@@ -488,3 +495,64 @@ for (const [name, act] of [
     assert.equal(b.types().includes('compaction/start'), false)
   })
 }
+
+// Stage 2: from the draft line on, after a turn that ended well, the checkpoint is made
+// ahead; the steward's "compact" at the check line uses it.
+test('stage 2: the draft starts at the draft line, not below it, and "compact" uses it', async (t) => {
+  const b = await boot(t)
+  // Check line 16,000, part base 0: draft line 16,000 - min(60,000, 8,000) = 8,000.
+  const before = []
+  for (let index = 1; index <= 11 && b.kinds('steward').length === 0; index += 1) {
+    await b.say(`m${index}`)
+    await tick(20)
+    before.push({ tokens: b.tokens(), drafted: b.kinds('checkpoint').length })
+  }
+  const first = before.findIndex(step => step.drafted > 0)
+  assert.ok(first > 0, 'not at the first turn')
+  assert.ok(before[first].tokens >= 8_000)
+  assert.ok(before.slice(0, first).every(step => step.tokens < 8_000), 'none below the draft line')
+  assert.ok(before[first - 1].tokens < 8_000)
+  await settle(() => b.kinds('steward').length === 1)
+  await b.quiet()
+  // The steward came after the draft; the draft was used, with no second call.
+  assert.equal(b.kinds('checkpoint').length, 1)
+  await b.say('after')
+  assert.equal(b.types().filter(type => type === 'compaction/summary').length, 1)
+  assert.equal(b.kinds('checkpoint').length, 1)
+  assert.ok(b.balanced())
+})
+
+test('stage 2: no early draft after a stopped turn', async (t) => {
+  const b = await boot(t)
+  // Four turns: about 6,000 tokens, below the draft line (8,000).
+  for (let index = 1; index <= 4; index += 1) await b.say(`m${index}`)
+  assert.equal(b.kinds('checkpoint').length, 0)
+  // A turn stopped after its answer lands past the draft line: no draft.
+  b.env.answerSize = 12_000
+  let stopped = false
+  b.ctx.on('session/event', (_session, event) => {
+    if (event.type === 'assistant/message' && !stopped) {
+      stopped = true
+      queueMicrotask(() => b.agent.cancel({ kind: 'user' }))
+    }
+  })
+  await b.say('long one')
+  await tick(50)
+  assert.ok(b.tokens() >= 8_000 && b.tokens() < 16_000, `tokens ${b.tokens()}`)
+  assert.notEqual(b.events().findLast(event => event.type === 'turn/end').data.reason.kind, 'completed')
+  assert.equal(b.kinds('checkpoint').length, 0)
+  // The next turn that ends well starts it.
+  b.env.answerSize = 100
+  await b.say('short one')
+  await settle(() => b.kinds('checkpoint').length === 1)
+})
+
+test('the draft line examples', async () => {
+  const { draftLine, linesFor } = await import('../src/host/steward.js')
+  const big = linesFor({ window: 1_048_576, reserve: 256_000 })
+  assert.equal(big.check, 634_060)
+  assert.equal(draftLine(big.check, 20_000), 574_060)
+  const small = linesFor({ window: 128_000, reserve: 8_000 })
+  assert.equal(small.check, 96_000)
+  assert.equal(draftLine(small.check, 10_000), 53_000)
+})
