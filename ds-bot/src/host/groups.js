@@ -1140,6 +1140,12 @@ export function install(rt) {
       // with work in it clears the streak, and a paused room holds the post back.
       if (!idlePost && poster !== undefined && !event(opener) && opener.quiet !== true) clearIdleStreak(room)
       if (holdsPost) holdIdleCalls(room, round, poster, opened.speakers, { named, all: (mentionsOf(opener, everyone) ?? mentionsIn(opener.text ?? '', everyone)).all === true })
+      // An `auto` relay the owner's post opens: each Bot post queued with it still calls
+      // the members its rules name, as it would in a running round, and is not judged.
+      const folded = room.mode === 'auto' && userPost(opener) ? open.filter(post => post.botId !== undefined && !event(post) && rt.botOf(post.botId)) : []
+      for (const post of folded) {
+        if (!callPost(room, round, rt.botOf(post.botId), post.text ?? '', post, { judge: false }) && post.reportBack) (round.reports ??= []).push({ post, ids: [], from: 0 })
+      }
       // The group transcript hides the goal trigger, so the user sees their request as a reply.
       for (const post of posts.filter(item => item.goal === 'draft' && item.logged === undefined)) {
         round.replies.push({ kind: 'user', text: post.text, time: Date.now() })
@@ -1183,7 +1189,7 @@ export function install(rt) {
       }
       await rt.save()
       for (const post of open) {
-        if (post.reportBack && rt.botOf(post.botId)) void reportRound(room, post, round)
+        if (post.reportBack && rt.botOf(post.botId) && !folded.includes(post)) void reportRound(room, post, round)
       }
       // A post this round took in while it ran gets the replies of the members it called.
       for (const { post, ids, from } of round.reports ?? []) {
@@ -1328,8 +1334,8 @@ export function install(rt) {
   // A Bot's post that lands while a round runs calls its members in that round at
   // once, as the relay it opens would. Returns whether it called anyone. A post that
   // wants the replies (`reportBack`) gets those of the members it called when the
-  // round ends.
-  function callPost(room, round, sender, text, extra) {
+  // round ends. `judge: false`: rules only, a post the rules leave open calls nobody.
+  function callPost(room, round, sender, text, extra, { judge = true } = {}) {
     if (extra.failed !== undefined && !extra.askedBy) return false
     if (extra.resumed || extra.stopped) return false
     const post = { ...extra, botId: sender.id, name: sender.name, text }
@@ -1342,7 +1348,7 @@ export function install(rt) {
     if (!idlePost) clearIdleStreak(room)
     const opened = openingCall(room, post)
     if (idlePost && room.idlePaused !== undefined && holdIdleCalls(room, round, sender, opened.speakers, { named, all: (mentionsOf(post, everyone) ?? mentionsIn(text, everyone)).all === true })) return true
-    if (opened.judge && idlePost) return false
+    if (opened.judge && (idlePost || !judge)) return false
     // The judgment fills in the members it calls; the round waits for it before it reports.
     const picked = []
     if (opened.judge) judgeInto(room, round, round.signal, { text, fromBotId: sender.id, picked })

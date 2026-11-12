@@ -765,3 +765,109 @@ for (const jevOn of [true, false]) {
     assert.deepEqual(spoke, ['Chief'])
   })
 }
+
+// R4: in an auto relay the owner's post opens, each Bot post queued with it still calls
+// the members its rules name (A-E); those members reply at hop 2 (F).
+const postX = (ids, name, text, extra = {}) => ({ type: 'user/message', data: { source: { kind: 'bot', role: 'post', senderSessionId: ids[name], senderName: name, exchangeId: randomUUID(), ...extra }, content: [{ type: 'text', text: `[Group post from ${name}]\n${text}` }] } })
+const OWNER_PLAN = 'Please plan the launch for Friday'
+const BOT_PARTS = {
+  'none': () => [],
+  'Chief plain': ids => [postX(ids, 'Chief', 'I pushed the new build to staging for everyone.')],
+  'Chief @Coder': ids => [postX(ids, 'Chief', '@Coder please fix the parser bug before the launch.', { mentions: { ids: [ids.Coder], all: false } })],
+  'Writer(member) @Coder': ids => [postX(ids, 'Writer', '@Coder please list the merged code changes.', { member: true, mentions: { ids: [ids.Coder], all: false } })],
+  'Writer late askedBy Coder': ids => [postX(ids, 'Writer', 'Here is the copy you asked for: launch on Friday at noon.', { late: true, askedBy: ids.Coder })],
+  'Chief report_back @Coder': ids => [postX(ids, 'Chief', '@Coder please review the release branch today.', { reportBack: true, mentions: { ids: [ids.Coder], all: false } })],
+  'Chief report_back plain': ids => [postX(ids, 'Chief', 'Please review the release plan for the launch.', { reportBack: true })],
+}
+const OWNER_PARTS = {
+  'none': async () => [],
+  'plain': async env => [env.userMessage(OWNER_PLAN)],
+  '@Tester': async env => [env.userMessage('@Tester please run the launch checklist')],
+  'goal draft': async (env, room) => {
+    assert.equal((await env.call('goal-draft', { roomId: room.id, text: 'Ship the launch site' })).ok, true)
+    const goalId = env.rt.roomOf(room.id).goal.id
+    return [{ type: 'user/message', data: { source: { kind: 'bot', role: 'goal', goal: 'draft', goalId, exchangeId: randomUUID(), senderName: 'You' }, content: [{ type: 'text', text: '[Goal request]\nShip the launch site' }] } }]
+  },
+  'two plain': async env => [env.userMessage('Also check the launch budget'), env.userMessage(OWNER_PLAN)],
+}
+const WAKE = /finished the work you asked for/
+// One relay of the given parts. Jev says yes for Writer only. Every member answers a
+// status line (no judgment of it); Coder works first, so its caller is woken.
+async function cell(t, mode, ownerPart, botPart) {
+  const jev = await fakeJev(t, () => ({ p: { Writer: 0.95 } }))
+  const env = start(t)
+  const { room, ids } = await team(env, { mode })
+  const events = [...await OWNER_PARTS[ownerPart](env, room), ...BOT_PARTS[botPart](ids)]
+  env.sent.length = 0
+  jev.length = 0
+  for (const event of events) await env.emit(room.id, event)
+  const turns = []
+  await drive(env, env.relay(room.id, 'relay'), () => 'standby', async (entry, who) => {
+    turns.push({ who, wake: WAKE.test(entry.message.content[0].text.split('\n')[0]) })
+    if (who === 'Coder') env.rt.workRoomTurn(entry.sessionId, 'bash')
+  })
+  await settle(100)
+  const reports = env.sent.filter(entry => entry.message.source.role === 'report').map(entry => [...entry.message.content[0].text.matchAll(/^(Chief|Writer|Coder|Tester): /gm)].map(m => m[1]))
+  const called = turns.filter(turn => !turn.wake).map(turn => turn.who)
+  return { called, set: [...new Set(called)].sort(), woken: turns.filter(turn => turn.wake).map(turn => turn.who).sort(), jev: jev.map(body => body.state.from), reports }
+}
+
+for (const [label, ownerPart, botPart, member] of [
+  ['GA3-1', 'plain', 'Chief @Coder', 'Coder'],
+  ['GA3-2', 'plain', 'Writer late askedBy Coder', 'Coder'],
+  ['GA3-3', 'plain', 'Writer(member) @Coder', 'Coder'],
+]) {
+  test(`31. ${label} owner plain + ${botPart} in one auto relay: ${member} answers by the rule, the owner's pick too`, async (t) => {
+    const result = await cell(t, 'auto', ownerPart, botPart)
+    assert.deepEqual(result.set, ['Coder', 'Writer'])
+  })
+}
+
+test('32. GA3-5 owner plain + Chief report_back "@Coder" in one auto relay: Coder answers, one report with Coder\'s reply only', async (t) => {
+  const result = await cell(t, 'auto', 'plain', 'Chief report_back @Coder')
+  assert.deepEqual(result.set, ['Coder', 'Writer'])
+  assert.deepEqual(result.reports, [['Coder']])
+})
+
+test('33. matrix: owner part x Bot part in auto; Bot rule calls come from the same Bot part alone in an admin group', async (t) => {
+  const admin = {}
+  for (const botPart of Object.keys(BOT_PARTS)) if (botPart !== 'none') admin[botPart] = await cell(t, 'admin', 'none', botPart)
+  const grid = {}
+  for (const ownerPart of Object.keys(OWNER_PARTS)) {
+    grid[ownerPart] = {}
+    for (const botPart of Object.keys(BOT_PARTS)) {
+      if (ownerPart !== 'none' || botPart !== 'none') grid[ownerPart][botPart] = await cell(t, 'auto', ownerPart, botPart)
+    }
+  }
+  const owners = { 'plain': ['Writer'], '@Tester': ['Tester'], 'goal draft': ['Chief'], 'two plain': ['Writer'] }
+  const table = []
+  for (const [ownerPart, row] of Object.entries(grid)) {
+    for (const [botPart, got] of Object.entries(row)) {
+      table.push(`${ownerPart.padEnd(10)} | ${botPart.padEnd(26)} | called=${got.set.join(',') || '-'} woken=${got.woken.join(',') || '-'} jev=${got.jev.length}${got.jev.length ? `(${got.jev.join(',')})` : ''} reports=${JSON.stringify(got.reports)}`)
+      const where = `${ownerPart} x ${botPart}: ${JSON.stringify(got)}`
+      // The Bot part alone in auto: rules give the admin-mode calls, else one Bot-message judgment (D).
+      const alone = grid.none[botPart]
+      const rules = botPart === 'none' || alone.jev.length > 0 ? undefined : admin[botPart]
+      if (ownerPart === 'none') {
+        if (rules !== undefined) {
+          assert.deepEqual([got.set, got.woken, got.jev], [rules.set, rules.woken, []], where)
+        } else {
+          assert.deepEqual([got.set, got.jev], [['Writer'], ['Chief']], where)
+        }
+        if (botPart.includes('report_back')) assert.deepEqual(got.reports, rules?.reports ?? [got.set], where)
+        continue
+      }
+      const ruleCalls = rules?.set ?? []
+      assert.ok(got.set.length > 0, where)
+      assert.deepEqual(got.set, [...new Set([...owners[ownerPart], ...ruleCalls])].sort(), where)
+      assert.equal(got.called.length, got.set.length, `each member once: ${where}`)
+      assert.deepEqual(got.woken, rules?.woken ?? [], where)
+      const ownerJudged = ['plain', 'two plain'].includes(ownerPart)
+      assert.deepEqual(got.jev, ownerJudged ? ['user'] : [], where)
+      if (botPart.includes('report_back')) assert.deepEqual(got.reports, [ruleCalls], where)
+      else assert.deepEqual(got.reports, [], where)
+    }
+  }
+  t.diagnostic(`matrix (owner | bot | result)\n${table.join('\n')}`)
+})
+
