@@ -1,6 +1,6 @@
-// Background checkpoints for a Bot's own chat. Once the steward says "compact" (or, from
-// the draft line on, ahead of it), the checkpoint is written while the Bot is idle, from
-// the same prefix as its last request, and held here in memory. Nothing is written to the
+// Background checkpoints for a Bot's own chat. Once the steward says "compact", the
+// checkpoint is written while the Bot is idle, from the same prefix as its last request,
+// and held here in memory. Nothing is written to the
 // Session until the next step of a turn applies it, with no model call, in place of the
 // idle maintenance pass that held the owner's next message back. A draft that no longer
 // matches its Session is dropped, and the part makes room the way it always did.
@@ -48,50 +48,15 @@ export function spanOf(session) {
 // writeCheckpoint). `current(agent)`: the part is still its Bot's current own chat and
 // no switch runs. `measure(session)` prices the Session, `size(text)` one message.
 export function createDrafts({ rt, write, current, measure, size }) {
-  /** @type {Map<string, {seqs:number[], generation:number, input:any, marked:boolean, abort:AbortController, done:Promise<boolean>, result?:any}>} */
+  /** @type {Map<string, {seqs:number[], generation:number, input:any, abort:AbortController, result?:any}>} */
   const drafts = new Map()
   const requests = new Map()
-  // The summary of a part's last draft dropped as too large: no early draft until one is
-  // applied, and no draft at "compact" while that summary would not fit the span it takes.
+  // The summary of a part's last draft dropped as too large, or of a checkpoint made since
+  // without a draft: no draft at "compact" while it would not fit the span it takes.
   const tooBig = new Map()
   // The draft whose summary the hook hands over during an apply, per Session.
   const applying = new Map()
   let closed = false
-
-  // Starts a draft unless one is held or running: one per part.
-  function start(agent, { marked = false, early = false } = {}) {
-    const id = agent.id
-    const held = drafts.get(id)
-    if (held !== undefined) {
-      held.marked ||= marked
-      return held
-    }
-    if (closed || (requests.get(id) ?? 0) >= REQUESTS_MAX || (early && tooBig.has(id))) return undefined
-    const span = spanOf(agent.session)
-    if (span === undefined) return undefined
-    requests.set(id, (requests.get(id) ?? 0) + 1)
-    const entry = { ...span, marked, abort: new AbortController() }
-    drafts.set(id, entry)
-    entry.done = (async () => {
-      try {
-        const result = await write(span.input, agent, AbortSignal.any([entry.abort.signal, AbortSignal.timeout(DRAFT_TIMEOUT_MS)]))
-        // Read live: the part may have moved on, been dropped, or changed meanwhile.
-        if (drafts.get(id) !== entry) return false
-        if (!current(agent)) {
-          drafts.delete(id)
-          return false
-        }
-        entry.result = result
-        return true
-      } catch (error) {
-        if (drafts.get(id) !== entry) return false
-        drafts.delete(id)
-        rt.warn('ds-bot: background checkpoint for %s failed: %s', id, error?.message ?? error)
-        return false
-      }
-    })()
-    return entry
-  }
 
   // The span is still on the surface as it was drafted: same replacement generation,
   // same nodes in a row, same messages (a pruned or offloaded node reads differently).
@@ -112,11 +77,11 @@ export function createDrafts({ rt, write, current, measure, size }) {
     return measured.totalTokens - span + returning(session, measured, entry.seqs) + size(entry.result.summary.map(block => block.text).join('\n'))
   }
 
-  // Whether the marked, written draft still matches and fits under `lines`. One that does
+  // Whether the written draft still matches and fits under `lines`. One that does
   // not is dropped, and the part drafts no more this cycle.
   function fits(agent, lines) {
     const entry = drafts.get(agent.id)
-    if (entry?.result === undefined || !entry.marked) return false
+    if (entry?.result === undefined) return false
     const same = lines !== undefined && matches(agent.session, entry)
     if (same && after(agent.session, entry) <= AFTER_SHARE * lines.check) return true
     if (same) tooBig.set(agent.id, entry.result)
@@ -125,18 +90,36 @@ export function createDrafts({ rt, write, current, measure, size }) {
     return false
   }
 
-  // The steward said "compact": the part's draft, started now if none runs, is marked for
-  // the next step. True once it is written and fits under `lines`.
+  // The steward said "compact": the part's draft is written now, for the next step. True
+  // once it is written and fits under `lines`.
   async function compact(agent, lines) {
-    const big = tooBig.get(agent.id)
-    const seqs = spanOf(agent.session)?.seqs
+    const id = agent.id
+    const span = spanOf(agent.session)
+    if (closed || (requests.get(id) ?? 0) >= REQUESTS_MAX || span === undefined) return false
     // Predicts from the part's latest summary too large or made without a draft.
-    if (big !== undefined && seqs !== undefined && after(agent.session, { seqs, result: big }) > AFTER_SHARE * lines.check) return false
-    const entry = start(agent, { marked: true })
-    return entry !== undefined && await entry.done && drafts.get(agent.id) === entry && fits(agent, lines)
+    const big = tooBig.get(id)
+    if (big !== undefined && after(agent.session, { seqs: span.seqs, result: big }) > AFTER_SHARE * lines.check) return false
+    requests.set(id, (requests.get(id) ?? 0) + 1)
+    const entry = { ...span, abort: new AbortController() }
+    drafts.set(id, entry)
+    try {
+      entry.result = await write(span.input, agent, AbortSignal.any([entry.abort.signal, AbortSignal.timeout(DRAFT_TIMEOUT_MS)]))
+    } catch (error) {
+      if (drafts.get(id) !== entry) return false
+      drafts.delete(id)
+      rt.warn('ds-bot: background checkpoint for %s failed: %s', id, error?.message ?? error)
+      return false
+    }
+    // Read live: the part may have moved on, been dropped, or changed meanwhile.
+    if (drafts.get(id) !== entry) return false
+    if (!current(agent)) {
+      drafts.delete(id)
+      return false
+    }
+    return fits(agent, lines)
   }
 
-  // Takes the marked draft for this step, synchronously checked under `lines`: once taken
+  // Takes the draft for this step, synchronously checked under `lines`: once taken
   // it is gone, so it is applied at most once.
   function take(agent, lines) {
     if (!fits(agent, lines)) return undefined
@@ -180,14 +163,13 @@ export function createDrafts({ rt, write, current, measure, size }) {
   }
 
   return {
-    start,
     compact,
     take,
     fits,
     apply,
     summary,
     drop,
-    marked: sessionId => drafts.get(sessionId)?.marked === true,
+    marked: sessionId => drafts.has(sessionId),
     // A new cycle: a checkpoint made another way, or a part that becomes current again.
     // `fresh`: the part becomes current again, and its size mark goes too. `result`: the
     // checkpoint made another way; a size mark follows its summary.

@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { createDrafts, spanOf, summaryInput } from '../src/host/draft.js'
 import { estimateTokens } from '../src/host/text.js'
 
-test('one draft in flight; a second trigger does nothing; the hook gives the held summary only for its input', async () => {
+test('a draft written at "compact" is taken once; the hook gives the held summary only for its input', async () => {
   const writes = []
   const gate = Promise.withResolvers()
   const drafts = createDrafts({
@@ -30,11 +30,11 @@ test('one draft in flight; a second trigger does nothing; the hook gives the hel
   }
   const agent = { id: 'b', session }
   assert.deepEqual(spanOf(session).seqs, [1, 2, 3])
-  const first = drafts.start(agent)
-  assert.equal(drafts.start(agent), first)
+  const compacted = drafts.compact(agent, { check: 2_000 })
+  assert.equal(drafts.marked('b'), true, 'held from the start')
   assert.equal(writes.length, 1)
   gate.resolve()
-  assert.equal(await drafts.compact(agent, { check: 2_000 }), true)
+  assert.equal(await compacted, true)
   assert.equal(drafts.fits(agent, { check: 2_000 }), true)
   const entry = drafts.take(agent, { check: 2_000 })
   assert.equal(drafts.take(agent, { check: 2_000 }), undefined, 'taken once')
@@ -80,7 +80,7 @@ test('after two failed drafts in a row no third starts, until a checkpoint succe
   const agent = { id: 'b', session: { surface: { nodes: [0, 1, 2], replaceGeneration: 0 }, eventAt: seq => events[seq], deriveEventMessage: () => ({}), requestHeader: () => undefined } }
   assert.equal(await drafts.compact(agent, { check: 4_000 }), false)
   assert.equal(await drafts.compact(agent, { check: 4_000 }), false)
-  assert.equal(drafts.start(agent), undefined)
+  assert.equal(await drafts.compact(agent, { check: 4_000 }), false)
   assert.equal(writes, 2)
   drafts.succeeded('b')
   fail = false
@@ -104,16 +104,17 @@ test('a draft dropped while it runs is not spent; one dropped unused or a refuse
   const events = [{ type: 'user/message', data: {} }, { type: 'assistant/message', data: {} }, { type: 'assistant/message', data: {} }]
   const agent = { id: 'b', session: { surface: { nodes: [0, 1, 2], replaceGeneration: 0 }, eventAt: seq => events[seq], deriveEventMessage: () => ({}), requestHeader: () => undefined } }
   for (let index = 0; index < 3; index += 1) {
-    assert.ok(drafts.start(agent), `start ${index}`)
+    const compacted = drafts.compact(agent, { check: 4_000 })
     drafts.drop('b')
+    assert.equal(await compacted, false, `compact ${index}`)
   }
   // Too large for these lines: dropped unused, and no other draft this cycle.
   assert.equal(await drafts.compact(agent, { check: 100 }), false)
-  assert.equal(drafts.start(agent), undefined)
+  assert.equal(await drafts.compact(agent, { check: 4_000 }), false)
   // Next cycle: under these lines the dropped summary would fit, so "compact" drafts.
   drafts.succeeded('b')
   assert.equal(await drafts.compact(agent, { check: 4_000 }), true)
   await assert.rejects(drafts.apply(agent, drafts.take(agent, { check: 4_000 }), async () => { throw new Error('refused') }))
-  assert.equal(drafts.start(agent), undefined, 'a refused apply spends the cycle')
+  assert.equal(await drafts.compact(agent, { check: 4_000 }), false, 'a refused apply spends the cycle')
   assert.equal(writes, 5)
 })
