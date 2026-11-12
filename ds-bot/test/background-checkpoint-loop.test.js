@@ -949,3 +949,58 @@ test('a floor near the check line: no steward call on two turns in a row', async
   assert.ok(summaries(b) >= 1)
   assert.ok(b.balanced())
 })
+
+// Fixed content above the check line (128 skills, about 107%): a move cannot bring the
+// part under the line, so the fresh part's opening turn does not ask the steward and move
+// on again by itself. Every model call follows an owner message.
+test('a base above the check line: a fresh part does not move on again by itself', async (t) => {
+  const b = await boot(t, { skills: 128 })
+  const seen = calls(b)
+  Object.assign(b.rt, { ensureCapabilities: async () => {}, moveSchedules: async () => {}, keepTeamFolder: () => {}, own: () => true })
+  const fresh = new Map()
+  const isPart = id => id === 'b' || /^b-fresh/.test(id)
+  b.rt.isBotSession = isPart
+  b.rt.selfOf = id => (isPart(id) ? 'b' : undefined)
+  b.rt.resolveAgent = async id => (id === 'b' || id === undefined ? b.agent : fresh.get(id) ?? fresh.set(id, await b.ctx.agentLoop.create(SessionId(id), { provider: P, model: 'm' })).get(id))
+  let made = 0
+  b.rt.createSession = async () => {
+    if (made >= 5) throw new Error('5 fresh parts')
+    made += 1
+    seen.push('NEW')
+    b.rt.chatOwners.set(`b-fresh${made}`, 'b')
+    return `b-fresh${made}`
+  }
+  const note = ['Goals', 'Constraints and preferences', 'Progress', 'Decisions', 'Facts to keep', 'Open threads', 'Next step', 'Where to look'].map(name => `## ${name}\n- (none)`).join('\n\n')
+  const stream = b.ctx.llm.stream.bind(b.ctx.llm)
+  b.ctx.llm.stream = (options) => {
+    if (!textOf(options.messages?.at(-1)).startsWith('You are now writing a handoff note')) return stream(options)
+    seen.push('H')
+    return (async function* () {
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: note }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: note } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })()
+  }
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    if (call.kind === 'turn') seen.push('t')
+    return push(call)
+  }
+  b.env.answerSize = 2_000
+  for (let index = 1; index <= 8; index += 1) {
+    const agent = await b.rt.resolveAgent(b.bot.sessionId)
+    agent.followup(userMessage(`m${index}`))
+    await settle(() => agent.status === 'idle' && !agent.inbox.hasPending)
+    await tick(60)
+    const now = await b.rt.resolveAgent(b.bot.sessionId)
+    await settle(() => now.status === 'idle' && !now.inbox.hasPending)
+  }
+  await tick(100)
+  const order = seen.join(' ')
+  const perTurn = stewardsPerTurn(seen)
+  assert.equal(seen.filter(call => call === 't').length, 8, order)
+  assert.ok(order.split(/\bt\b/).every(part => part.split(' ').filter(call => call === 'NEW').length <= 1), order)
+  for (let n = 1; n < perTurn.length; n += 1) assert.ok(perTurn[n] <= 1 && (perTurn[n - 1] === 0 || perTurn[n] === 0), `steward on turns ${n} and ${n + 1}: ${order}`)
+  assert.equal(b.env.warnings.length, 0, b.env.warnings.join('\n'))
+})

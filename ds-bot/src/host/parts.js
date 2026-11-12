@@ -870,6 +870,9 @@ export function install(rt) {
   const rescued = new Map()
   // Parts that have not started a turn yet, with their handoff package's size.
   const freshParts = new Map()
+  // Fresh parts in their opening turn. Before its first request DSH has not added the
+  // prompt and skill catalog, so the part's base is its size at the end of that turn.
+  const opening = new Set()
   // Context size where a part started, or where a checkpoint or a failed switch left
   // it. A part makes room again only once it grew by a quarter of the check line past
   // it, so a large system prompt or a broken switch cannot make it act every turn.
@@ -1372,7 +1375,8 @@ export function install(rt) {
     if (fresh !== undefined) {
       freshParts.delete(agent.id)
       partBase.set(agent.id, (tokensOf(agent.session) ?? 0) + fresh)
-    }
+      opening.add(agent.id)
+    } else if (payload.step > 1 && opening.delete(agent.id)) partBase.set(agent.id, tokensOf(agent.session) ?? 0)
     // ponytail: while a subagent is out the part neither moves nor holds its step (a
     // hold would wake it again at once). updateBot refuses a run-mode change while one
     // is out, so a part is off its engine here only when the change came mid-step and
@@ -1545,6 +1549,9 @@ export function install(rt) {
   async function checkContext(agent) {
     // A part whose subagent is out moves at the first idle after the run is back.
     if (switches.has(agent.id) || freshParts.has(agent.id) || checking.has(agent.id) || readOnly() || subagentOut(agent.id)) return
+    // A move cannot make a part smaller than what it opens with, so its opening turn
+    // decides nothing.
+    if (opening.delete(agent.id)) return void partBase.set(agent.id, tokensOf(agent.session) ?? 0)
     // A local agent CLI owns its in-session compaction.
     if (rt.isLocalAgentRef?.(rt.botOf(placeOf(agent.id)?.botId)?.model ?? rt.botOf(placeOf(agent.id)?.botId)?.appliedModel) === true) return
     if (lastTurnEnd(agent)?.data?.reason?.kind === 'error') return
