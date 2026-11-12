@@ -110,6 +110,7 @@ test('a draft dropped while it runs is not spent; one dropped unused or a refuse
   // Too large for these lines: dropped unused, and no other draft this cycle.
   assert.equal(await drafts.compact(agent, { check: 100 }), false)
   assert.equal(drafts.start(agent), undefined)
+  // Next cycle: under these lines the dropped summary would fit, so "compact" drafts.
   drafts.succeeded('b')
   assert.equal(await drafts.compact(agent, { check: 4_000 }), true)
   await assert.rejects(drafts.apply(agent, drafts.take(agent, { check: 4_000 }), async () => { throw new Error('refused') }))

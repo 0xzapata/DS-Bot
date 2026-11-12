@@ -44,19 +44,22 @@ export function createDrafts({ rt, write, current, measure, size }) {
   /** @type {Map<string, {seqs:number[], generation:number, input:any, marked:boolean, abort:AbortController, done:Promise<boolean>, result?:any}>} */
   const drafts = new Map()
   const requests = new Map()
+  // The summary of a part's last draft dropped as too large: no early draft until one is
+  // applied, and no draft at "compact" while that summary would not fit the span it takes.
+  const tooBig = new Map()
   // The draft whose summary the hook hands over during an apply, per Session.
   const applying = new Map()
   let closed = false
 
   // Starts a draft unless one is held or running: one per part.
-  function start(agent, { marked = false } = {}) {
+  function start(agent, { marked = false, early = false } = {}) {
     const id = agent.id
     const held = drafts.get(id)
     if (held !== undefined) {
       held.marked ||= marked
       return held
     }
-    if (closed || (requests.get(id) ?? 0) >= REQUESTS_MAX) return undefined
+    if (closed || (requests.get(id) ?? 0) >= REQUESTS_MAX || (early && tooBig.has(id))) return undefined
     const span = spanOf(agent.session)
     if (span === undefined) return undefined
     requests.set(id, (requests.get(id) ?? 0) + 1)
@@ -107,7 +110,9 @@ export function createDrafts({ rt, write, current, measure, size }) {
   function fits(agent, lines) {
     const entry = drafts.get(agent.id)
     if (entry?.result === undefined || !entry.marked) return false
-    if (lines !== undefined && matches(agent.session, entry) && after(agent.session, entry) <= AFTER_SHARE * lines.check) return true
+    const same = lines !== undefined && matches(agent.session, entry)
+    if (same && after(agent.session, entry) <= AFTER_SHARE * lines.check) return true
+    if (same) tooBig.set(agent.id, entry.result)
     drop(agent.id)
     requests.set(agent.id, REQUESTS_MAX)
     return false
@@ -116,6 +121,11 @@ export function createDrafts({ rt, write, current, measure, size }) {
   // The steward said "compact": the part's draft, started now if none runs, is marked for
   // the next step. True once it is written and fits under `lines`.
   async function compact(agent, lines) {
+    const big = tooBig.get(agent.id)
+    const seqs = spanOf(agent.session)?.seqs
+    // ponytail: predicts from the last dropped summary; a model that later writes shorter
+    // ones gets no draft at "compact" until a switch. Upgrade: retry one every N cycles.
+    if (big !== undefined && seqs !== undefined && after(agent.session, { seqs, result: big }) > AFTER_SHARE * lines.check) return false
     const entry = start(agent, { marked: true })
     return entry !== undefined && await entry.done && drafts.get(agent.id) === entry && fits(agent, lines)
   }
@@ -135,6 +145,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
     try {
       const result = await region(entry.seqs[0], entry.seqs.at(-1))
       requests.delete(agent.id)
+      tooBig.delete(agent.id)
       return result
     } catch (error) {
       requests.set(agent.id, REQUESTS_MAX)
@@ -172,10 +183,15 @@ export function createDrafts({ rt, write, current, measure, size }) {
     drop,
     marked: sessionId => drafts.get(sessionId)?.marked === true,
     // A new cycle: a checkpoint made another way, or a part that becomes current again.
-    succeeded: sessionId => requests.delete(sessionId),
+    // `fresh`: the part becomes current again, and its size mark goes too.
+    succeeded: (sessionId, fresh = false) => {
+      requests.delete(sessionId)
+      if (fresh) tooBig.delete(sessionId)
+    },
     closed: () => closed,
     dispose() {
       closed = true
+      tooBig.clear()
       for (const sessionId of drafts.keys()) drop(sessionId)
     },
   }

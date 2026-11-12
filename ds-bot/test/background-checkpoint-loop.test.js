@@ -319,9 +319,10 @@ function cycles(b) {
 }
 const draftsPerCycle = seen => Object.values(Object.groupBy(seen.filter(call => call.draft), call => call.cycle)).map(calls => calls.length)
 
-// 8b. The 0.75 rule fails at every check while the owner writes during it. Every draft
-// is dropped as too large, so each cycle makes one draft request, then the foreground
-// checkpoint; as many checkpoints go in as before drafts (4358f654: 4).
+// 8b. The 0.75 rule fails at every check while the owner writes during it. The first
+// draft is dropped as too large; no draft follows (the same summary does not fit the
+// span "compact" would draft either), so every checkpoint is a foreground one; as many
+// checkpoints go in as before drafts (4358f654: 4).
 test('a draft dropped as too large is not written again in the same cycle', async (t) => {
   const b = await boot(t)
   const seen = cycles(b)
@@ -341,7 +342,7 @@ test('a draft dropped as too large is not written again in the same cycle', asyn
   await tick(80)
   assert.equal(b.types().filter(type => type === 'compaction/summary').length, 4)
   assert.ok(draftsPerCycle(seen).every(count => count === 1), JSON.stringify(seen))
-  assert.equal(seen.length, 8, JSON.stringify(seen))
+  assert.equal(seen.length, 5, JSON.stringify(seen))
   assert.ok(b.balanced())
 })
 
@@ -691,4 +692,62 @@ test('the draft line examples', async () => {
   const small = linesFor({ window: 128_000, reserve: 8_000 })
   assert.equal(small.check, 96_000)
   assert.equal(draftLine(small.check, 10_000), 53_000)
+})
+
+// The checkpoint and steward calls in order, as `s<n>` and `cD<n>`/`cF<n>` (a draft, or
+// one written inside a compaction bracket), `n` being the checkpoints already made.
+function calls(b) {
+  const seen = []
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    const types = b.types()
+    const n = types.filter(type => type === 'compaction/summary').length
+    const open = types.filter(type => type === 'compaction/start').length > types.filter(type => type === 'compaction/end').length
+    if (call.kind === 'steward') seen.push(`s${n}`)
+    if (call.kind === 'checkpoint') seen.push(`c${open ? 'F' : 'D'}${n}`)
+    return push(call)
+  }
+  return seen
+}
+const summaries = b => b.types().filter(type => type === 'compaction/summary').length
+
+// Review 2 C1: a summary over the 0.75 share in every cycle. One draft is wasted, then
+// every checkpoint is made with compactNow and no draft before it.
+test('drafts that never fit are paid for once, not in every cycle', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  b.env.checkpointText = 'S'.repeat(52_000)
+  for (let index = 1; index <= 60; index += 1) await b.say(`m${index}`)
+  await tick(50)
+  const made = summaries(b)
+  assert.ok(made >= 10, `checkpoints ${made}`)
+  assert.ok(seen.filter(call => call[0] === 'c').length <= made + 1, seen.join(' '))
+  assert.ok(b.balanced())
+})
+
+// Review 2 C2, 6,000-character answers: every draft fits and every cycle uses its early
+// draft, as at 81fcdbe2 (7 calls, 6 checkpoints).
+test('drafts that fit: the early draft is used in every cycle', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  for (let index = 1; index <= 50; index += 1) await b.say(`m${index}`)
+  await tick(50)
+  const checkpoints = seen.filter(call => call[0] === 'c')
+  assert.equal(summaries(b), 6)
+  assert.deepEqual(checkpoints, ['cD0', 'cD1', 'cD2', 'cD3', 'cD4', 'cD5', 'cD6'])
+  // Each early: written before its cycle's steward call.
+  for (let n = 0; n < 6; n += 1) assert.ok(seen.indexOf(`cD${n}`) < seen.indexOf(`s${n}`), seen.join(' '))
+})
+
+// 28,000-character answers: the early draft is too large, the steward's draft is not.
+test('a too-large early draft stops early drafts until a draft is applied', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  b.env.answerSize = 28_000
+  for (let index = 1; index <= 6; index += 1) await b.say(`m${index}`)
+  await tick(50)
+  // Cycle 0: the early draft is dropped, compactNow. Cycle 1: no early draft; the one
+  // written at "compact" is applied. Cycle 2: the early draft starts again.
+  assert.deepEqual(seen.slice(0, 6), ['cD0', 's0', 'cF0', 's1', 'cD1', 'cD2'])
+  assert.ok(b.balanced())
 })

@@ -1559,7 +1559,7 @@ export function install(rt) {
     // From the draft line on, after a turn that ended well, a Bot's own chat writes its
     // checkpoint ahead, so it is ready when the steward is asked at the check line.
     if (tokens < lines.check) {
-      if (tokens >= draftLine(lines.check, partBase.get(agent.id)) && lastTurnEnd(agent)?.data?.reason?.kind === 'completed' && ownChat(agent)) drafts.start(agent)
+      if (tokens >= draftLine(lines.check, partBase.get(agent.id)) && lastTurnEnd(agent)?.data?.reason?.kind === 'completed' && ownChat(agent)) drafts.start(agent, { early: true })
       return
     }
     if (!grown(agent.id, tokens, lines)) return
@@ -1899,7 +1899,7 @@ export function install(rt) {
     if (live?.turn !== undefined) throw Object.assign(new Error('The Bot is working; wait for it to finish or stop it first'), { code: 'bot/busy' })
     if (subagentOut(current)) refuse(SUBAGENT_OUT, 'bot/busy')
     drafts.drop(current)
-    drafts.succeeded(partId)
+    drafts.succeeded(partId, true)
     // DSH turns away every step of an archived Session and every task aimed at it, so
     // the part leaves the archive before it becomes current.
     await ctx.workspaceRegistry.unarchiveSession(partId)
