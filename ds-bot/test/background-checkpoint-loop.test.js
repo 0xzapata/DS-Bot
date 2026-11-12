@@ -376,6 +376,55 @@ test('an Auto pick to a model the checkpoint does not fit: the held one is not u
   assert.ok(b.balanced())
 })
 
+// A Stop as the checkpoint goes in, at the step an Auto pick woke: the message is kept
+// once (the picker and the apply each keep a stopped message).
+test('a Stop during the apply on the turn an Auto pick woke keeps the message once', async (t) => {
+  const b = await boot(t, { bot: { auto: true, appliedModel: `${P}/m` } })
+  await grow(b)
+  await settle(() => b.kinds('checkpoint').length === 1)
+  await tick(30)
+  b.env.pick = `${P}/big`
+  let stopped = false
+  b.ctx.on('session/event', (_session, event) => {
+    if (event.type === 'compaction/start' && !stopped) {
+      stopped = true
+      queueMicrotask(() => b.agent.cancel({ kind: 'user' }, { keepInbox: true }))
+    }
+  })
+  b.agent.followup(userMessage('picked then stopped'))
+  await b.quiet()
+  await tick(50)
+  await b.quiet()
+  assert.ok(stopped)
+  assert.equal(b.owner().filter(text => text === 'picked then stopped').length, 1)
+  assert.equal(b.agent.session.deriveMessages().filter(message => message.role === 'user' && textOf(message) === 'picked then stopped').length, 1)
+  assert.ok(b.balanced())
+})
+
+test('a Stop at the step an Auto pick woke, with no checkpoint held, keeps the message once', async (t) => {
+  const b = await boot(t, { bot: { auto: true, appliedModel: `${P}/m` } })
+  await b.say('m1')
+  b.env.pick = `${P}/big`
+  // Runs inside the picker's held step, after parts.js, as the apply does.
+  let stopped = false
+  b.ctx.on('agent/pre-step', (payload, next) => {
+    if (!stopped && payload.messages.some(message => textOf(message) === 'picked then stopped')) {
+      stopped = true
+      b.agent.cancel({ kind: 'user' }, { keepInbox: true })
+    }
+    return next()
+  })
+  b.agent.followup(userMessage('picked then stopped'))
+  await b.quiet()
+  await tick(50)
+  await b.quiet()
+  assert.ok(stopped)
+  assert.equal(b.kinds('checkpoint').length, 0)
+  assert.equal(b.owner().filter(text => text === 'picked then stopped').length, 1)
+  assert.equal(b.agent.session.deriveMessages().filter(message => message.role === 'user' && textOf(message) === 'picked then stopped').length, 1)
+  assert.equal(b.kinds('turn').at(-1).model, 'm', 'the stopped pick is undone')
+})
+
 // 11. Dispose while a draft runs: aborted, nothing written.
 test('the plugin stops while a draft runs: it is aborted and writes nothing', async (t) => {
   const b = await boot(t)

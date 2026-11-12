@@ -82,9 +82,7 @@ export function install(rt) {
       const events = agent.session.snapshotEvents()
       // Only a stopped turn: a part switch that took the step carries its input on.
       if (events.findLast(event => event.type === 'turn/end')?.data?.reason?.kind === 'aborted') {
-        const pending = new Set([...agent.inbox.nextStep, ...agent.inbox.nextTurn].map(message => message.id))
-        const said = new Set(events.filter(event => event.type === 'user/message').map(event => event.data.id))
-        keep(agent, unreached.messages.filter(message => !pending.has(message.id) && !said.has(message.id)))
+        keep(agent, unreached.messages)
         undo(agent, unreached)
       }
     }
@@ -157,10 +155,13 @@ export function install(rt) {
   }
 
   // A stopped step's input stays in the chat, unanswered, where DSH leaves a message
-  // whose model call a Stop cuts off; the next request carries it.
+  // whose model call a Stop cuts off; the next request carries it. A message already in
+  // the chat (parts.js keeps a step stopped at its checkpoint) or still waiting is skipped.
   const keep = (agent, messages) => {
+    const pending = new Set([...agent.inbox.nextStep, ...agent.inbox.nextTurn].map(message => message.id))
+    const said = new Set(agent.session.snapshotEvents().filter(event => event.type === 'user/message').map(event => event.data.id))
     try {
-      for (const message of messages) agent.session.append('user/message', message, { surfaceOp: 'append' })
+      for (const message of messages) if (!pending.has(message.id) && !said.has(message.id)) agent.session.append('user/message', message, { surfaceOp: 'append' })
     } catch (error) { rt.warn('ds-bot: a stopped message of %s was not kept in its chat: %s', rt.botOf(rt.chatOwners.get(agent.id))?.name ?? agent.id, error?.message ?? error) }
   }
   // Wakes the driver on the inbox as it stands. DSH claims as the waking send lands, so
