@@ -26,11 +26,19 @@ export function summaryInput(session, seqs) {
   return { ...(tools === undefined ? {} : { tools }), messages: system === null ? messages : [system, ...messages] }
 }
 
-// The tokens of the latest runtime-context snapshot when it lies in `seqs`, else 0: DSH
-// puts it back at the next step once a checkpoint condenses it, so it is never freed.
+// The tokens of the nodes in `seqs` that DSH puts back at the next step once a checkpoint
+// condenses them, so they are never freed: the latest runtime-context snapshot
+// (dsh-agent-loop RuntimeContextProjection), skill catalog (dsh-tool-skill catalogHistory)
+// and instruction-file baseline (dsh-agent-instructions visibleBaselineSource) on the
+// surface, each put back when none is left there.
+const comesBack = source => source?.kind === 'runtime-context' || source?.kind === 'skill-catalog' || (source?.kind === 'agent-instructions' && source.baseline === true)
 export function returning(session, measured, seqs) {
-  const last = measured?.nodes?.findLast(node => session.eventAt(node.seq)?.data?.source?.kind === 'runtime-context')
-  return last !== undefined && seqs.includes(last.seq) ? last.tokens : 0
+  const latest = new Map()
+  for (const node of measured?.nodes ?? []) {
+    const source = session.eventAt(node.seq)?.data?.source
+    if (comesBack(source)) latest.set(source.kind, node)
+  }
+  return [...latest.values()].filter(node => seqs.includes(node.seq)).reduce((total, node) => total + node.tokens, 0)
 }
 
 // The span a checkpoint would condense now: every surface node after the system head up

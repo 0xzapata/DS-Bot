@@ -10,7 +10,8 @@ import { format } from 'node:util'
 import { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
+import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness, provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
+import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic'
 import { install as installParts } from '../src/host/parts.js'
@@ -33,8 +34,9 @@ const isSteward = options => typeof options.system === 'string' && options.syste
 
 // One Bot 'b' whose own chat is Session 'b', on the real loop. Every model call is
 // recorded. `env.steward` is the steward's answer; `env.gate` holds checkpoint calls
-// while set; `env.answerSize` sets the characters of each answer.
-async function boot(t, { bot: botFields = {}, local = false, readOnly, room = false, models = { m: WINDOW, big: 2 * WINDOW, tiny: 2_000 } } = {}) {
+// while set; `env.answerSize` sets the characters of each answer. `skills`: that many
+// skills in the real skill tool's catalog (about 128 tokens each).
+async function boot(t, { bot: botFields = {}, local = false, readOnly, room = false, skills = 0, models = { m: WINDOW, big: 2 * WINDOW, tiny: 2_000 } } = {}) {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(TokenMeter)
@@ -72,6 +74,12 @@ async function boot(t, { bot: botFields = {}, local = false, readOnly, room = fa
   ctx.llm.registerAdapter([P], new Recorder())
   ctx.provide('workspaceRegistry', { unarchiveSession: async () => {}, archiveSession: async () => {} })
   await ctx.plugin(BasicCompactionEngine, { auto: false })
+  if (skills > 0) {
+    provideWorkingDirectoryFixture(ctx)
+    const list = Array.from({ length: skills }, (_, n) => ({ name: `skill-${n}`, provider: 'test', description: `skill ${n} ${'d'.repeat(480)}`, content: 'do it', invocation: { modelInvocable: true, userInvocable: true } }))
+    ctx.provide('skills', { snapshot: async () => ({ skills: list, complete: true }), list: async () => list, get: async name => list.find(skill => skill.name === name) })
+    await ctx.plugin(ToolSkill)
+  }
   const bot = { id: 'b', name: 'Writer', role: 'Writes', createdAt: 1, ...botFields }
   const bots = new Map([['b', bot]])
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-bgcp-'))
@@ -798,3 +806,97 @@ test('floor at about 30% of check: every draft is applied, none blocks', async (
   assert.ok(drafts <= made, seen.join(' '))
 })
 
+// Live check 3 (80,000-token window): a node that a checkpoint condenses and DSH puts
+// back at the next step. `skills`: the real skill tool's catalog with that many skills
+// (about 128 tokens each); `summary`: the characters of each summary. Both set the floor,
+// the size at the first turn after a checkpoint. The calls are listed in order (`t` a
+// turn). A cycle is one steward episode: steward calls with at most one turn between
+// them, as the app's log counts them (one swap each).
+async function floorCycles(t, { skills = 0, summary = 400, cycles = 6 } = {}) {
+  const b = await boot(t, { skills })
+  const seen = calls(b)
+  let applied = 0
+  const info = b.ctx.logger.info.bind(b.ctx.logger)
+  b.ctx.logger.info = (template, ...args) => {
+    if (String(template).includes('applied its background checkpoint')) applied += 1
+    return info(template, ...args)
+  }
+  const push = b.env.calls.push.bind(b.env.calls)
+  const sizes = []
+  b.env.calls.push = (call) => {
+    if (call.kind === 'turn') {
+      seen.push('t')
+      sizes.push({ tokens: b.tokens(), made: summaries(b) })
+    }
+    return push(call)
+  }
+  // Steward calls with at most one turn since the one before: asked again at once.
+  const again = () => seen.filter(call => call[0] === 's' || call === 't').filter((call, n, order) => call[0] === 's' && n >= 1 && (order[n - 1][0] === 's' || (n >= 2 && order[n - 2][0] === 's'))).length
+  const episodes = () => seen.filter(call => call[0] === 's').length - again()
+  b.env.answerSize = 2_000
+  b.env.checkpointText = 'S'.repeat(summary)
+  let index = 0
+  // Until the cycle after the last one starts: its steward call ends the count.
+  while (episodes() <= cycles && index < 250) { index += 1; await b.say(`m${index}`) }
+  // The calls of the cycles counted: up to the first steward call of the next one.
+  const cut = seen.findLastIndex(call => call[0] === 's')
+  const counted = seen.slice(0, cut)
+  const made = summaries(b)
+  const requests = counted.filter(call => call[0] === 'c').length
+  const stewards = counted.filter(call => call[0] === 's').length
+  const turns = counted.filter(call => call === 't').length
+  const floors = Array.from({ length: made }, (_, n) => sizes.find(size => size.made === n + 1)?.tokens).filter(size => size !== undefined)
+  const floor = Math.round(100 * floors.reduce((total, size) => total + size, 0) / floors.length / 16_000)
+  assert.deepEqual(b.owner(), Array.from({ length: index }, (_, n) => `m${n + 1}`))
+  assert.ok(b.balanced())
+  const result = { cycles, requests, stewards, again: again(), floor, turns, made, applied }
+  const line = `skills ${skills} summary ${summary}: floor ${floor}% cycles ${cycles} turns ${turns} summary requests ${requests} steward ${stewards} steward-again ${result.again} applied ${applied} of ${made}: ${counted.join(' ')}`
+  console.log(line)
+  return { ...result, b, seen, line }
+}
+// About 80% and 30% floors, with the skill catalog and with no node put back (a summary
+// of that size instead).
+const floorCases = [
+  ['the skill catalog, floor about 80%', { skills: 90 }],
+  ['the skill catalog, floor about 30%', { skills: 30 }],
+  ['no node put back, floor about 80%', { summary: 48_000 }],
+  ['no node put back, floor about 30%', { summary: 14_000 }],
+]
+for (const [name, options] of floorCases) {
+  test(`${name}: at most one summary request and one steward call per cycle`, async (t) => {
+    const { cycles, requests, stewards, again, made, applied, floor, line } = await floorCycles(t, options)
+    assert.ok(requests <= cycles + 1, line)
+    assert.ok(stewards <= cycles + 1, line)
+    assert.equal(again, 0, line)
+    // At about 30% every checkpoint goes in in the background. At about 80% none fits
+    // under 0.75 x check: one draft is dropped, then the idle condense runs once a cycle.
+    if (floor < 50) assert.equal(applied, made, line)
+    else assert.equal(applied, 0, line)
+  })
+}
+
+// The floor at about 30% with the skill catalog: a message sent while the summary is
+// written is answered before it ends.
+test('the skill catalog, floor about 30%: a message during the summary is answered at once', async (t) => {
+  const b = await boot(t, { skills: 30 })
+  b.env.answerSize = 2_000
+  let index = 0
+  // Through the first checkpoint, then gate the next one.
+  while (summaries(b) < 1 && index < 100) { index += 1; await b.say(`m${index}`) }
+  b.env.gateOn()
+  const before = b.kinds('checkpoint').length
+  while (b.kinds('checkpoint').length === before && index < 200) { index += 1; await b.say(`m${index}`) }
+  const turns = b.kinds('turn').length
+  b.agent.followup(userMessage('during the summary'))
+  await b.quiet()
+  assert.equal(b.kinds('turn').length, turns + 1)
+  const answer = b.events().findLast(event => event.type === 'assistant/message').data
+  assert.ok(textOf(answer.message ?? answer).startsWith('answer to during the summary'))
+  assert.equal(summaries(b), 1, 'the summary has not ended')
+  b.env.gateOff()
+  await tick(30)
+  await b.say('after')
+  assert.equal(summaries(b), 2)
+  assert.equal(b.kinds('checkpoint').length, before + 1)
+  assert.ok(b.balanced())
+})
