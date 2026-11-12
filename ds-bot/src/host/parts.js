@@ -727,6 +727,7 @@ export function install(rt) {
     const before = tokensOf(agent.session)
     const sessionId = agent.session.id
     drafts.drop(sessionId)
+    const measured = measureOf(agent.session)
     condensing.add(sessionId)
     let result
     try {
@@ -746,7 +747,8 @@ export function install(rt) {
     drafts.succeeded(sessionId, false, result)
     // The prefix cache starts over anyway, so the memory section catches up.
     rt.renewMemory(sessionId)
-    const after = tokensOf(agent.session) ?? before
+    // What DSH puts back at the next step counts too (draft.js returning).
+    const after = (tokensOf(agent.session) ?? before) + returning(agent.session, measured, result.shadowedSeqs ?? [])
     partBase.set(agent.id, after)
     ctx.logger.info('ds-bot: %s condensed from %d to %d tokens (check line %d, hard line %d)', agent.id, before ?? -1, after ?? -1, lines.check, lines.hard)
     return after < lines.check

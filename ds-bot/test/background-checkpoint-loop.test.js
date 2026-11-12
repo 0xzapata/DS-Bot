@@ -923,3 +923,28 @@ test('the skill catalog, floor about 30%: a message during the summary is answer
   assert.equal(b.kinds('checkpoint').length, before + 1)
   assert.ok(b.balanced())
 })
+
+// The steward calls between the turns: one count for each turn (the calls before it
+// since the turn before).
+const stewardsPerTurn = seen => seen.join(' ').split(/\bt\b/).map(part => part.split(' ').filter(call => call[0] === 's').length)
+
+// A floor at about 97% of the check line (the real skill catalog is put back after every
+// checkpoint): the blocking checkpoint's base counts what DSH puts back, so the next turn
+// does not ask the steward and condense again.
+test('a floor near the check line: no steward call on two turns in a row', async (t) => {
+  const b = await boot(t, { skills: 117 })
+  const seen = calls(b)
+  const push = b.env.calls.push.bind(b.env.calls)
+  const sizes = []
+  b.env.calls.push = (call) => {
+    if (call.kind === 'turn') { seen.push('t'); sizes.push(b.tokens()) }
+    return push(call)
+  }
+  b.env.answerSize = 2_000
+  for (let index = 1; index <= 8; index += 1) await b.say(`m${index}`)
+  const perTurn = stewardsPerTurn(seen)
+  console.log(`floor-97 steward per turn ${perTurn.join(',')} sizes ${sizes.join(',')} ${seen.join(' ')}`)
+  for (let n = 1; n < perTurn.length; n += 1) assert.ok(perTurn[n - 1] === 0 || perTurn[n] === 0, `steward on turns ${n} and ${n + 1}: ${seen.join(' ')}`)
+  assert.ok(summaries(b) >= 1)
+  assert.ok(b.balanced())
+})
