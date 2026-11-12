@@ -88,8 +88,6 @@ export function install(rt) {
     const live = rt.roomOf(room.id)
     if (signal?.aborted || live === undefined) return done([], 'stopped')
     if (!owner && live.autoEpoch !== epoch) return done([], 'stale')
-    // Each owner message starts the count of Bot-to-Bot turns again, in message order.
-    if (owner) delete live.autoTurns
     // A mode changed away from `auto` is the owner's: the pick is not applied.
     if (live.mode !== 'auto') return fallback('stopped', live)
     if (state.prefs?.jev !== true || answers == null) return fallback('null', live)

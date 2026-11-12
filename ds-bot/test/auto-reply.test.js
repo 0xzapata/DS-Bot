@@ -192,7 +192,7 @@ async function playRound(env, roomId, reply, { signal, callId = 'relay' } = {}) 
 }
 
 // The judgment alone, on a room set to auto by hand.
-test('autoRepliers: owner picks by p, at most 3, never capped, and reset the turn count; audit without text', async (t) => {
+test('autoRepliers: owner picks by p, at most 3, never capped, and leave the turn count alone; audit without text', async (t) => {
   const jev = await fakeJev(t, () => ({ p: { Chief: 0.2, Writer: 0.9, Coder: 0.7, Tester: 0.6 } }))
   const env = start(t)
   const { room, ids } = await team(env, { mode: 'admin' })
@@ -203,7 +203,7 @@ test('autoRepliers: owner picks by p, at most 3, never capped, and reset the tur
   assert.equal(reason, 'jev')
   assert.deepEqual(picked, [ids.Writer, ids.Coder, ids.Tester], 'the cap is for Bot-to-Bot turns only')
   assert.deepEqual(applied, [picked])
-  assert.equal(room.autoTurns, undefined)
+  assert.equal(room.autoTurns, 6, 'reset when the message arrives, not after the judgment')
   assert.equal(jev.length, 1)
   assert.equal(Object.keys(jev[0].questions).length, 4)
   await waitFor(() => env.audit().length === 1)
@@ -563,8 +563,8 @@ for (const count of [4, 5]) {
     const owner = audit.filter(line => line.from === 'user')
     assert.equal(owner.length, count)
     assert.ok(owner.every(line => line.picked.length > 0 && line.reason !== 'cap'), JSON.stringify(owner.map(line => line.reason)))
-    const last = audit.findLastIndex(line => line.from === 'user')
-    const botPicks = audit.slice(last + 1).filter(line => line.reason === 'jev').reduce((sum, line) => sum + line.picked.length, 0)
+    // The count was reset when the messages arrived, before any judgment.
+    const botPicks = audit.filter(line => line.from !== 'user' && line.reason === 'jev').reduce((sum, line) => sum + line.picked.length, 0)
     assert.equal(env.rt.roomOf(room.id).autoTurns ?? 0, botPicks)
   })
 }
@@ -677,6 +677,30 @@ for (const delay of [0, 1200]) {
     assert.equal(botPicks, 8)
   })
 }
+
+test('27. worst case: Jev always yes, the owner writes mid-chain and its judgment takes 1200 ms: exactly 8 Bot-to-Bot picks after it', async (t) => {
+  let second = false
+  await fakeJev(t, (body) => {
+    if (body.state.from === 'user') return body.state.message === 'second ask' ? { p: { Tester: 0.95 }, delayMs: 1200 } : { p: { Writer: 0.95 } }
+    return { p: { Chief: 0.95, Writer: 0.95, Coder: 0.95, Tester: 0.95 } }
+  })
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('first ask'))
+  const running = env.relay(room.id, 'relay')
+  let mark
+  await drive(env, running, (name, n) => `${name} adds point ${n} to the plan now.`, async (entry, who, n) => {
+    if (n !== 3 || second) return
+    second = true
+    await env.compose(room.id, 'second ask')
+    env.rt.nudgeRoom(room.id)
+    await settle(60)
+    mark = env.audit().length
+  })
+  await settle(200)
+  const picks = env.audit().slice(mark).filter(line => line.from !== 'user' && line.reason === 'jev').reduce((sum, line) => sum + line.picked.length, 0)
+  assert.equal(picks, 8, 'the chain reaches the cap, and no more')
+})
 
 // A group of the given members, set to auto; `prepare(rt, room)` edits saved data.
 async function smallGroup(env, names, { jev = true } = {}) {
