@@ -634,3 +634,98 @@ test('22. a judgment that throws counts as null: the owner default answers, the 
   assert.deepEqual(spoke, ['Chief'])
   assert.deepEqual(env.audit().map(line => [nameOf(env, line), line.reason]), [['user', 'null'], ['Chief', 'null']])
 })
+
+// R1: in an auto relay that holds an owner post, the owner's newest post alone decides.
+for (const jevBot of ['null', 'none']) {
+  test(`23. [Jev for the Bot post ${jevBot}] owner "@Writer ..." and a Chief post in one relay: Writer answers the owner`, async (t) => {
+    await fakeJev(t, () => (jevBot === 'null' ? { status: 500 } : { p: {} }))
+    const env = start(t)
+    const { room, ids } = await team(env)
+    await env.emit(room.id, env.userMessage('@Writer please rewrite the launch copy today'))
+    await env.emit(room.id, postEvent(ids, 'Chief', 'I pushed the new build to staging for everyone.'))
+    const { spoke } = await playRound(env, room.id, name => `${name} replies with the launch copy details.`)
+    assert.equal(spoke[0], 'Writer')
+  })
+}
+
+test('24. an owner message and a Bot post that would pick the same member: it answers once, as the owner\'s', async (t) => {
+  const jev = await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9 }, delayMs: 100 } : body.state.from === 'Coder' ? { p: { Writer: 0.95 } } : { p: {} }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  await env.emit(room.id, env.userMessage('Please plan the launch for Friday'))
+  await env.emit(room.id, postEvent(ids, 'Coder', 'I merged the parser fix into main.'))
+  const running = env.relay(room.id, 'relay')
+  const progress = await waitFor(() => [...env.rt.roomProgress.values()].find(round => round.roomId === room.id))
+  const slot = progress.slots.find(each => each.id === ids.Writer)
+  const fromBot = slot?.fromBot
+  const spoke = await drive(env, running, name => `${name} answers the launch plan now.`)
+  assert.deepEqual(spoke.filter(name => name === 'Writer'), ['Writer'])
+  assert.notEqual(fromBot, true, 'answers the owner, not a Bot')
+  assert.ok(!jev.some(body => body.state.from === 'Coder' && body.state.message.includes('parser fix')), 'the Bot post is not judged')
+})
+
+// R2: the count resets when the owner's message arrives, never later.
+for (const delay of [0, 1200]) {
+  test(`26. Jev always yes, an owner message and a Bot post in one relay, owner judgment ${delay} ms: at most 8 Bot-to-Bot picks`, async (t) => {
+    await fakeJev(t, body => ({ p: { Writer: 0.95, Coder: 0.95, Tester: 0.95, Chief: 0.95 }, ...(body.state.from === 'user' ? { delayMs: delay } : {}) }))
+    const env = start(t)
+    const { room, ids } = await team(env)
+    await env.emit(room.id, env.userMessage('Please plan the launch for Friday'))
+    await env.emit(room.id, postEvent(ids, 'Chief', 'I pushed the new build to staging for everyone.'))
+    await playRound(env, room.id, (name, n) => `${name} adds point ${n} to the launch plan.`)
+    const botPicks = env.audit().filter(line => line.from !== 'user' && line.reason === 'jev').reduce((sum, line) => sum + line.picked.length, 0)
+    assert.equal(botPicks, 8)
+  })
+}
+
+// A group of the given members, set to auto; `prepare(rt, room)` edits saved data.
+async function smallGroup(env, names, { jev = true } = {}) {
+  const { call, rt, sent } = env
+  const ids = { Chief: (await call('state', {})).value.mainBotId }
+  for (const [name, role] of [['Writer', 'Writes copy'], ['Coder', 'Writes code'], ['Tester', 'Tests']]) {
+    if (names.includes(name)) ids[name] = (await call('create-bot', { name, role })).value.id
+  }
+  const room = (await call('create-room', { name: 'R1', members: names.map(name => ids[name]) })).value
+  await call('update-room', { id: room.id, mode: 'auto' })
+  if (jev) await call('set-prefs', { jev: true })
+  sent.length = 0
+  return { room: rt.roomOf(room.id), ids }
+}
+
+test('28. no admin and no Main Bot, Jev null: every member answers the owner', async (t) => {
+  await fakeJev(t, () => ({ status: 500 }))
+  const env = start(t)
+  const { room } = await smallGroup(env, ['Writer', 'Coder', 'Tester'])
+  assert.equal(room.admin ?? null, null)
+  await env.emit(room.id, env.userMessage('Anyone around?'))
+  const { spoke } = await playRound(env, room.id, name => `${name} is here and ready to help.`)
+  assert.deepEqual(spoke.toSorted(), ['Coder', 'Tester', 'Writer'])
+})
+
+test('29. the only other member is private: the default answers the owner; no request names it', async (t) => {
+  const jev = await fakeJev(t, () => ({ p: {} }))
+  const env = start(t)
+  const { room, ids } = await smallGroup(env, ['Chief', 'Tester'])
+  env.rt.botOf(ids.Tester).private = true
+  await env.emit(room.id, env.userMessage('Can someone check the build?'))
+  const { spoke } = await playRound(env, room.id, name => `${name} checked the build and it is green.`)
+  assert.deepEqual(spoke, ['Chief'])
+  assert.equal(jev.length, 1, 'Chief\'s reply has nobody to ask about')
+  for (const body of jev) {
+    const raw = JSON.stringify(body)
+    assert.ok(!raw.includes('Tester') && !raw.includes('Tests'), raw)
+  }
+})
+
+for (const jevOn of [true, false]) {
+  test(`30. a group of one member, Jev ${jevOn ? 'on' : 'off'}: that member answers the owner`, async (t) => {
+    await fakeJev(t, () => ({ p: { Chief: 0.9 } }))
+    const env = start(t)
+    const { room, ids } = await smallGroup(env, ['Chief', 'Writer'], { jev: jevOn })
+    // A group cannot be made with one member; saved data can hold one.
+    env.rt.roomOf(room.id).members = [ids.Chief]
+    await env.emit(room.id, env.userMessage('Status please'))
+    const { spoke } = await playRound(env, room.id, () => 'Chief reports that all work is on track.')
+    assert.deepEqual(spoke, ['Chief'])
+  })
+}
