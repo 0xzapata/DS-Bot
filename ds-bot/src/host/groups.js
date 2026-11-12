@@ -632,8 +632,10 @@ export function install(rt) {
       if (by === undefined) delete slot.by
       else slot.by = by
       if (fromBot) slot.fromBot = true
-      if (hop === undefined) delete slot.hop
-      else slot.hop = hop
+      // A member still waiting keeps the lower hop: a call for the owner's message wins.
+      const lower = waiting === -1 ? hop : Math.min(hop ?? 1, slot.hop ?? 1)
+      if (lower === undefined || lower === 1) delete slot.hop
+      else slot.hop = lower
       if (!moves) slot.ordered = false
       else if (!ordered) round.slots.push(slot)
       else {

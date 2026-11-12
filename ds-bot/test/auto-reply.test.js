@@ -778,7 +778,11 @@ const BOT_PARTS = {
   'Writer late askedBy Coder': ids => [postX(ids, 'Writer', 'Here is the copy you asked for: launch on Friday at noon.', { late: true, askedBy: ids.Coder })],
   'Chief report_back @Coder': ids => [postX(ids, 'Chief', '@Coder please review the release branch today.', { reportBack: true, mentions: { ids: [ids.Coder], all: false } })],
   'Chief report_back plain': ids => [postX(ids, 'Chief', 'Please review the release plan for the launch.', { reportBack: true })],
+  'Chief @all': ids => [postX(ids, 'Chief', '@all please share your launch status.', { mentions: { ids: [], all: true } })],
+  'Chief @Coder, Tester @Coder': ids => [postX(ids, 'Chief', '@Coder please fix the parser bug before the launch.', { mentions: { ids: [ids.Coder], all: false } }), postX(ids, 'Tester', '@Coder please send me the test build.', { mentions: { ids: [ids.Coder], all: false } })],
 }
+// Jev picks Coder for this owner message, Writer for every other one.
+const OWNER_CODER = 'Please get the parser ready for Friday'
 const OWNER_PARTS = {
   'none': async () => [],
   'plain': async env => [env.userMessage(OWNER_PLAN)],
@@ -789,12 +793,13 @@ const OWNER_PARTS = {
     return [{ type: 'user/message', data: { source: { kind: 'bot', role: 'goal', goal: 'draft', goalId, exchangeId: randomUUID(), senderName: 'You' }, content: [{ type: 'text', text: '[Goal request]\nShip the launch site' }] } }]
   },
   'two plain': async env => [env.userMessage('Also check the launch budget'), env.userMessage(OWNER_PLAN)],
+  'plain (Coder)': async env => [env.userMessage(OWNER_CODER)],
 }
 const WAKE = /finished the work you asked for/
 // One relay of the given parts. Jev says yes for Writer only. Every member answers a
 // status line (no judgment of it); Coder works first, so its caller is woken.
 async function cell(t, mode, ownerPart, botPart) {
-  const jev = await fakeJev(t, () => ({ p: { Writer: 0.95 } }))
+  const jev = await fakeJev(t, body => ({ p: body.state.message === OWNER_CODER ? { Coder: 0.95 } : { Writer: 0.95 } }))
   const env = start(t)
   const { room, ids } = await team(env, { mode })
   const events = [...await OWNER_PARTS[ownerPart](env, room), ...BOT_PARTS[botPart](ids)]
@@ -803,13 +808,14 @@ async function cell(t, mode, ownerPart, botPart) {
   for (const event of events) await env.emit(room.id, event)
   const turns = []
   await drive(env, env.relay(room.id, 'relay'), () => 'standby', async (entry, who) => {
-    turns.push({ who, wake: WAKE.test(entry.message.content[0].text.split('\n')[0]) })
+    const slot = [...env.rt.roomProgress.values()].find(round => round.roomId === room.id)?.slots.find(each => each.id === ids[who] && each.status === 'speaking')
+    turns.push({ who, wake: WAKE.test(entry.message.content[0].text.split('\n')[0]), hop: slot?.hop ?? 1, bot: slot?.by !== undefined || slot?.fromBot === true })
     if (who === 'Coder') env.rt.workRoomTurn(entry.sessionId, 'bash')
   })
   await settle(100)
   const reports = env.sent.filter(entry => entry.message.source.role === 'report').map(entry => [...entry.message.content[0].text.matchAll(/^(Chief|Writer|Coder|Tester): /gm)].map(m => m[1]))
   const called = turns.filter(turn => !turn.wake).map(turn => turn.who)
-  return { called, set: [...new Set(called)].sort(), woken: turns.filter(turn => turn.wake).map(turn => turn.who).sort(), jev: jev.map(body => body.state.from), reports }
+  return { called, set: [...new Set(called)].sort(), turns: turns.filter(turn => !turn.wake), woken: turns.filter(turn => turn.wake).map(turn => turn.who).sort(), jev: jev.map(body => body.state.from), reports }
 }
 
 for (const [label, ownerPart, botPart, member] of [
@@ -839,7 +845,7 @@ test('33. matrix: owner part x Bot part in auto; Bot rule calls come from the sa
       if (ownerPart !== 'none' || botPart !== 'none') grid[ownerPart][botPart] = await cell(t, 'auto', ownerPart, botPart)
     }
   }
-  const owners = { 'plain': ['Writer'], '@Tester': ['Tester'], 'goal draft': ['Chief'], 'two plain': ['Writer'] }
+  const owners = { 'plain': ['Writer'], '@Tester': ['Tester'], 'goal draft': ['Chief'], 'two plain': ['Writer'], 'plain (Coder)': ['Coder'] }
   const table = []
   for (const [ownerPart, row] of Object.entries(grid)) {
     for (const [botPart, got] of Object.entries(row)) {
@@ -861,8 +867,11 @@ test('33. matrix: owner part x Bot part in auto; Bot rule calls come from the sa
       assert.ok(got.set.length > 0, where)
       assert.deepEqual(got.set, [...new Set([...owners[ownerPart], ...ruleCalls])].sort(), where)
       assert.equal(got.called.length, got.set.length, `each member once: ${where}`)
+      // F: the owner part's members reply at hop 1; a member only a Bot's rules call
+      // replies at hop 2.
+      for (const turn of got.turns) assert.deepEqual([turn.who, turn.hop], [turn.who, owners[ownerPart].includes(turn.who) ? 1 : 2], where)
       assert.deepEqual(got.woken, rules?.woken ?? [], where)
-      const ownerJudged = ['plain', 'two plain'].includes(ownerPart)
+      const ownerJudged = ['plain', 'two plain', 'plain (Coder)'].includes(ownerPart)
       assert.deepEqual(got.jev, ownerJudged ? ['user'] : [], where)
       if (botPart.includes('report_back')) assert.deepEqual(got.reports, [ruleCalls], where)
       else assert.deepEqual(got.reports, [], where)
@@ -896,4 +905,28 @@ test('35. a Bot post "@Coder" into a running auto round (callPost); Coder calls 
   })
   assert.equal(env.audit().find(line => nameOf(env, line) === 'Coder')?.hop, 2)
   assert.deepEqual(spoke, ['Writer', 'Coder'])
+})
+
+// GA4-2b: a member the owner part and a Bot's rule both call replies at hop 1.
+test('36. owner plain (Jev Coder) + Chief "@Coder" in one auto relay: Coder answers once, at hop 1', async (t) => {
+  const result = await cell(t, 'auto', 'plain (Coder)', 'Chief @Coder')
+  assert.deepEqual(result.turns.map(turn => [turn.who, turn.hop]), [['Coder', 1]])
+})
+
+test('37. running auto round: while Coder speaks, the owner\'s message (Jev Coder) is drained, then Chief posts "@Coder": Coder answers once more, at hop 1', async (t) => {
+  await fakeJev(t, body => (body.state.message === OWNER_CODER ? { p: { Coder: 0.95 } } : { p: {} }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  await env.emit(room.id, env.userMessage('@Coder hold the floor'))
+  const hops = []
+  const roundOf = () => [...env.rt.roomProgress.values()].find(round => round.roomId === room.id)
+  const spoke = await drive(env, env.relay(room.id, 'relay'), () => 'standby', async (entry, who, n) => {
+    hops.push(roundOf().slots.find(slot => slot.id === ids[who] && slot.status === 'speaking').hop ?? 1)
+    if (n !== 1) return
+    await env.compose(room.id, OWNER_CODER)
+    env.rt.nudgeRoom(room.id)
+    assert.ok(await waitFor(() => roundOf().slots.some(slot => slot.id === ids.Coder && slot.status === 'waiting')), 'the owner judgment calls Coder')
+    await env.rt.postToRoom(env.rt.roomOf(room.id), env.rt.botOf(ids.Chief), '@Coder please fix the parser bug before the launch.', { mentions: { ids: [ids.Coder], all: false } })
+  })
+  assert.deepEqual([spoke, hops], [['Coder', 'Coder'], [1, 1]])
 })
