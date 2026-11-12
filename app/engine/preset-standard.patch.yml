@@ -65,10 +65,6 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
-                # DSH keeps 65,536 tokens free, so a switch to a model with a message
-                # budget of 78,019 or less failed (MODEL_SWITCH_COMPACTION_FAILED).
-                config:
-                  headroomTokens: 16384
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner

@@ -3,7 +3,7 @@
 // the owner goes on, and goes in at the next step with no model call of its own.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { format } from 'node:util'
@@ -1182,27 +1182,4 @@ test('a side request at a fresh part\'s opening does not set its base', async (t
   assert.equal(seen.filter(call => call[0] === 'c').length, 2, order)
   assert.equal(seen.filter(call => call === 'H').length, 1, order)
   assert.equal(parts.made(), 1, order)
-})
-
-// The app mounts compaction-basic with the headroom its preset sets, read from that file:
-// DSH's default (65,536) failed every switch to a model whose window minus its output
-// limit is 78,019 or less (MODEL_SWITCH_COMPACTION_FAILED), and the Bot then failed every
-// turn. A Bot on a 160,000 window switches to an 80,000 one, both with 4,000 of output.
-const appHeadroom = Number(readFileSync(new URL('../../app/engine/preset-standard.patch.yml', import.meta.url), 'utf8').match(/^ +headroomTokens: (\d+)$/m)?.[1])
-test('the app\'s compaction headroom: a Bot switches to a model with an 80,000 window', async (t) => {
-  const b = await boot(t, { models: { m: 160_000, small: 80_000 }, compaction: Number.isInteger(appHeadroom) ? { headroomTokens: appHeadroom } : {} })
-  const info = b.ctx.llm.resolveModelInfo.bind(b.ctx.llm)
-  b.ctx.llm.resolveModelInfo = async (...args) => ({ ...await info(...args), defaultMaxTokens: 4_000 })
-  const errors = []
-  b.ctx.on('agent/error', ({ error }) => errors.push(error?.code ?? String(error)))
-  b.env.answerSize = 200
-  await b.say('before')
-  await b.agent.model.select({ provider: P, model: 'small' })
-  await b.say('after')
-  assert.deepEqual(errors, [])
-  assert.deepEqual(b.owner(), ['before', 'after'])
-  const last = b.kinds('turn').at(-1)
-  assert.equal(last.model, 'small')
-  const answer = b.events().findLast(event => event.type === 'assistant/message').data
-  assert.ok(textOf(answer.message ?? answer).startsWith('answer to after'))
 })

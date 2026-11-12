@@ -11,6 +11,12 @@
 // expressions; the overlay keeps them by writing through the same
 // entry-list dialect the include parses. This reconciliation runs on the
 // next launch.
+//
+// The same restatement gives every preset's compaction-basic row the headroom
+// below: DSH keeps 65,536 tokens free, so a switch to a model whose window minus
+// its output limit is 78,019 or less failed (MODEL_SWITCH_COMPACTION_FAILED).
+// The row sits in a group inside the preset's `config.plugins`, which a patch
+// cannot address by id.
 import { dirname, join } from 'node:path'
 import { rmSync, writeFileSync } from 'node:fs'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
@@ -19,31 +25,35 @@ import { dump } from 'js-yaml'
 
 export const GOAL_PATCH_NAME = 'goal.patch.yml'
 
+export const HEADROOM_TOKENS = 16_384
+
 const PRESET = '@deepseek-ai/dsh-agent-preset'
+const COMPACTION = '@deepseek-ai/dsh-compaction-basic'
 const GOAL_ROWS = new Set(['@deepseek-ai/dsh-command-goal', '@deepseek-ai/dsh-tool-goal'])
 
 // A group row keeps its child rows in `config`, a plain list.
-const hasGoalRow = (rows) => rows.some(row => GOAL_ROWS.has(row?.name)
-  || (row?.group === true && Array.isArray(row.config) && hasGoalRow(row.config)))
+const hasRow = (rows) => rows.some(row => GOAL_ROWS.has(row?.name) || row?.name === COMPACTION
+  || (row?.group === true && Array.isArray(row.config) && hasRow(row.config)))
 
-const stripGoalRows = (rows) => rows
+const restate = (rows) => rows
   .map(row => (row?.group === true && Array.isArray(row.config)
-    ? { ...row, config: stripGoalRows(row.config) }
-    : row))
+    ? { ...row, config: restate(row.config) }
+    : row?.name === COMPACTION ? { ...row, config: { ...row.config, headroomTokens: HEADROOM_TOKENS } } : row))
   .filter(row => GOAL_ROWS.has(row?.name) === false)
 
 /**
- * The overlay rows that restate every preset carrying goal rows without them,
- * or `undefined` when no preset needs it. Composed over the bundles and the
- * profile's own patch, so user edits to a preset survive — minus the rows.
+ * The overlay rows that restate every preset carrying goal rows without them, and
+ * its compaction-basic row with the headroom merged into that row's config, or
+ * `undefined` when no preset needs it. Composed over the bundles and the profile's
+ * own patch, so user edits to a preset survive — minus the goal rows.
  * @param {import('@deepseek-ai/dsh-app-boot').Profile} profile
  * @returns {import('@deepseek-ai/cordis-plugin-include').PatchOptions[] | undefined}
  */
 export function goalPatch(profile) {
   const entries = composeEntries([...profile.layers.map(layer => layer.patches), profile.patches])
   const rows = entries
-    .filter(entry => entry.name === PRESET && Array.isArray(entry.config?.plugins) && hasGoalRow(entry.config.plugins))
-    .map(entry => ({ id: entry.id, name: entry.name, config: { ...entry.config, plugins: stripGoalRows(entry.config.plugins) } }))
+    .filter(entry => entry.name === PRESET && Array.isArray(entry.config?.plugins) && hasRow(entry.config.plugins))
+    .map(entry => ({ id: entry.id, name: entry.name, config: { ...entry.config, plugins: restate(entry.config.plugins) } }))
   return rows.length === 0 ? undefined : rows
 }
 
