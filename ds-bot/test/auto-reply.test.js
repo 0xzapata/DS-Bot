@@ -664,6 +664,18 @@ test('24. an owner message and a Bot post that would pick the same member: it an
   assert.ok(!jev.some(body => body.state.from === 'Coder' && body.state.message.includes('parser fix')), 'the Bot post is not judged')
 })
 
+// R3: a member a Bot names replies one hop deeper than that Bot.
+test('25. owner @Writer, Writer @Coder, Coder calls nobody: Coder\'s reply is hop 2 (bar 0.7), so p 0.65 calls nobody', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'Coder' ? { p: { Tester: 0.65 } } : { p: {} }))
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('@Writer start the release notes'))
+  const { spoke } = await playRound(env, room.id, name => (name === 'Writer' ? '@Coder please list the merged code changes for the notes.' : `${name} lists every merged change in detail.`))
+  const coder = env.audit().find(line => nameOf(env, line) === 'Coder')
+  assert.equal(coder?.hop, 2)
+  assert.deepEqual(spoke, ['Writer', 'Coder'])
+})
+
 // R2: the count resets when the owner's message arrives, never later.
 for (const delay of [0, 1200]) {
   test(`26. Jev always yes, an owner message and a Bot post in one relay, owner judgment ${delay} ms: at most 8 Bot-to-Bot picks`, async (t) => {

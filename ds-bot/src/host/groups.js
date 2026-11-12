@@ -805,7 +805,8 @@ export function install(rt) {
   // Every 0-tool status step counts toward the room's idle rounds, also one that names
   // nobody: that step is what a group answering itself runs on. Once the room is paused
   // (or this step reaches the limit) the calls it would make wait for the user.
-  function callFrom(room, round, member, text, called, { worked = false, byBot = false } = {}) {
+  // `hop`: the auto-reply depth of the member's own reply; the members it names reply one deeper.
+  function callFrom(room, round, member, text, called, { worked = false, byBot = false, hop } = {}) {
     const everyone = room.members.map(rt.botOf).filter(Boolean)
     const others = everyone.filter(other => other.id !== member.id)
     const { all, found: named } = mentionsIn(text, everyone)
@@ -830,7 +831,7 @@ export function install(rt) {
     for (const peer of callees) called.add(peer.id)
     if (byBot && idleStep && holdIdleCalls(room, round, member, callees, { named, all })) return
     if (callees.length === 0) return
-    callIn(round, callees, `${member.name} mentioned you`, member.id)
+    callIn(round, callees, `${member.name} mentioned you`, member.id, { hop: (hop ?? 1) + 1 })
     // An @Name from the admin hands the member its goal task.
     if (rt.isAdminOf(room, member.id)) for (const peer of callees) rt.goalTaskWorking?.(room.id, peer.id)
   }
@@ -924,7 +925,7 @@ export function install(rt) {
     }
     const reply = await roomTurn(
       room, member, session.id, { text, images: prompt.images, files: prompt.files }, slot.note ?? 'your turn', signal, round, slot.by, said,
-      line => callFrom(room, round, member, line, called, { worked, byBot: answeredBot }),
+      line => callFrom(room, round, member, line, called, { worked, byBot: answeredBot, hop: slot.hop }),
       onWork,
     )
     const final = typeof reply === 'string' && !isPass(reply) ? reply : undefined
@@ -947,7 +948,7 @@ export function install(rt) {
     } else if (subRunning) {
       if (final !== undefined) {
         postInRound(room, round, member, final, Date.now() - startedAt, slot.by)
-        callFrom(room, round, member, final, called, { worked: true, byBot: answeredBot })
+        callFrom(room, round, member, final, called, { worked: true, byBot: answeredBot, hop: slot.hop })
       }
       slot.status = 'working'
       markBatchWorked(room.id, member.id)
@@ -956,7 +957,7 @@ export function install(rt) {
       slot.status = 'posted'
       if (final !== undefined) {
         postInRound(room, round, member, final, Date.now() - startedAt, slot.by)
-        callFrom(room, round, member, final, called, { worked, byBot: answeredBot })
+        callFrom(room, round, member, final, called, { worked, byBot: answeredBot, hop: slot.hop })
         // A reply that calls nobody in an `auto` group: a judgment may call members, but
         // never for a status post or while the idle guard holds the group.
         if (called.size === 0 && room.mode === 'auto' && room.idlePaused === undefined && !signal.aborted
