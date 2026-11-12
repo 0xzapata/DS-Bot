@@ -130,8 +130,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
   async function compact(agent, lines) {
     const big = tooBig.get(agent.id)
     const seqs = spanOf(agent.session)?.seqs
-    // ponytail: predicts from the last dropped summary; a model that later writes shorter
-    // ones gets no draft at "compact" until a switch. Upgrade: retry one every N cycles.
+    // Predicts from the part's latest summary too large or made without a draft.
     if (big !== undefined && seqs !== undefined && after(agent.session, { seqs, result: big }) > AFTER_SHARE * lines.check) return false
     const entry = start(agent, { marked: true })
     return entry !== undefined && await entry.done && drafts.get(agent.id) === entry && fits(agent, lines)
@@ -190,10 +189,12 @@ export function createDrafts({ rt, write, current, measure, size }) {
     drop,
     marked: sessionId => drafts.get(sessionId)?.marked === true,
     // A new cycle: a checkpoint made another way, or a part that becomes current again.
-    // `fresh`: the part becomes current again, and its size mark goes too.
-    succeeded: (sessionId, fresh = false) => {
+    // `fresh`: the part becomes current again, and its size mark goes too. `result`: the
+    // checkpoint made another way; a size mark follows its summary.
+    succeeded: (sessionId, fresh = false, result = undefined) => {
       requests.delete(sessionId)
       if (fresh) tooBig.delete(sessionId)
+      else if (result?.summary !== undefined && tooBig.has(sessionId)) tooBig.set(sessionId, result)
     },
     closed: () => closed,
     dispose() {

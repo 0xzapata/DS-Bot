@@ -726,10 +726,11 @@ export function install(rt) {
     const sessionId = agent.session.id
     drafts.drop(sessionId)
     condensing.add(sessionId)
+    let result
     try {
       // Through the service itself, past DS Bot's own wrapper: only a call on the
       // service gives the engine its own context, with the services it injects.
-      const result = inTurn
+      result = inTurn
         ? await engine.compactIfNeeded(agent, 'context-overflow', signal)
         : await engine.compactNow(agent, AbortSignal.timeout(NOTE_TIMEOUT_MS))
       if (result === null) return false
@@ -740,7 +741,7 @@ export function install(rt) {
     } finally {
       condensing.delete(sessionId)
     }
-    drafts.succeeded(sessionId)
+    drafts.succeeded(sessionId, false, result)
     // The prefix cache starts over anyway, so the memory section catches up.
     rt.renewMemory(sessionId)
     const after = tokensOf(agent.session) ?? before

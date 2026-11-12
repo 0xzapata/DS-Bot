@@ -822,3 +822,20 @@ test('a moderate runtime context: background checkpoints in every cycle, sized w
   // The apply runs before the step that sends the request at `turn`.
   for (const { after, turn } of applied) assert.ok(Math.abs(after - sizes[turn]) <= 0.05 * sizes[turn], `${after} vs ${sizes[turn]}`)
 })
+
+// Review 3 M1: one summary too large in the first cycle, normal ones after. The size mark
+// follows the checkpoints made without a draft, so background checkpoints come back.
+test('after one summary too large, background checkpoints come back', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  b.env.checkpointText = 'S'.repeat(52_000)
+  let index = 0
+  while (summaries(b) === 0 && index < 40) { index += 1; await b.say(`m${index}`) }
+  b.env.checkpointText = 'S'.repeat(400)
+  for (let n = 1; n <= 50; n += 1) await b.say(`n${n}`)
+  await tick(50)
+  const later = seen.slice(seen.indexOf('s1'))
+  assert.ok(later.filter(call => call.startsWith('cD')).length >= 3, seen.join(' '))
+  assert.ok(seen.filter(call => call[0] === 'c').length <= summaries(b) + 2, seen.join(' '))
+  assert.ok(b.balanced())
+})
