@@ -614,8 +614,9 @@ export function install(rt) {
   // if a member called.
   // `fromBot`: a call a Bot's message made without naming anyone (an auto pick), counted
   // by the idle guard as Bot-to-Bot. `tail`: ordered calls queue behind the ordered calls
-  // still waiting, so the owner's messages are answered in the order they came.
-  function callIn(round, callees, note, by, { ordered = false, fromBot = false, tail = false } = {}) {
+  // still waiting, so the owner's messages are answered in the order they came. `hop`:
+  // the auto-reply depth of the call's reply; none counts as 1.
+  function callIn(round, callees, note, by, { ordered = false, fromBot = false, tail = false, hop } = {}) {
     if (callees.length === 0) return
     round.batches = (round.batches ?? 0) + 1
     const batchKey = registerBatch(round.roomId, by, callees)
@@ -631,6 +632,8 @@ export function install(rt) {
       if (by === undefined) delete slot.by
       else slot.by = by
       if (fromBot) slot.fromBot = true
+      if (hop === undefined) delete slot.hop
+      else slot.hop = hop
       if (!moves) slot.ordered = false
       else if (!ordered) round.slots.push(slot)
       else {
@@ -698,15 +701,15 @@ export function install(rt) {
   // A judgment of who answers in an `auto` group (auto-reply.js), inside a running round:
   // the round waits for it, the owner's picks apply in the order the messages came, and
   // a Bot's picks are Bot-to-Bot calls with no caller to wake.
-  function judgeInto(room, round, signal, { text, fromBotId }) {
+  function judgeInto(room, round, signal, { text, fromBotId, hop }) {
     const owner = fromBotId === undefined
     round.judging = (round.judging ?? 0) + 1
     const busy = id => round.slots.some(slot => slot.id === id && (slot.status === 'speaking' || slot.status === 'waiting'))
     const apply = (ids) => {
       const note = owner ? 'new message from the user' : `${rt.botOf(fromBotId)?.name ?? 'A member'} posted in the group`
-      callIn(round, ids.map(rt.botOf).filter(Boolean), note, undefined, { ordered: owner, fromBot: !owner, tail: owner })
+      callIn(round, ids.map(rt.botOf).filter(Boolean), note, undefined, { ordered: owner, fromBot: !owner, tail: owner, ...(owner ? {} : { hop: (hop ?? 1) + 1 }) })
     }
-    const judged = rt.autoRepliers(room, { text, fromBotId, signal, after: owner ? round.judged : undefined, busy, apply })
+    const judged = rt.autoRepliers(room, { text, fromBotId, hop, signal, after: owner ? round.judged : undefined, busy, apply })
       .catch(error => rt.warn('ds-bot: reply judgment in %s failed: %s', room.name, error))
       .finally(() => { round.judging -= 1; round.nudge?.() })
     if (owner) round.judged = judged
@@ -716,7 +719,6 @@ export function install(rt) {
     if (room.mode !== 'auto') return
     room.autoEpoch = (room.autoEpoch ?? 0) + 1
     delete room.autoTurns
-    delete room.autoHop
   }
 
   // Messages the user sent while this round is running post into the log at once, so
@@ -956,7 +958,7 @@ export function install(rt) {
         // A reply that calls nobody in an `auto` group: a judgment may call members, but
         // never for a status post or while the idle guard holds the group.
         if (called.size === 0 && room.mode === 'auto' && room.idlePaused === undefined && !signal.aborted
-          && !isIdleRelayText(final, room.members.map(rt.botOf).filter(Boolean), [])) judgeInto(room, round, signal, { text: final, fromBotId: member.id })
+          && !isIdleRelayText(final, room.members.map(rt.botOf).filter(Boolean), [])) judgeInto(room, round, signal, { text: final, fromBotId: member.id, hop: slot.hop })
       }
     } else {
       slot.status = reply === null ? 'cancelled' : typeof reply === 'string' ? 'passed' : 'missed'
@@ -1081,7 +1083,7 @@ export function install(rt) {
         try {
           const { ids } = await rt.autoRepliers(room, { text: opener.text ?? '', fromBotId: opener.botId, signal: exec.signal })
           const live = rt.roomOf(room.id) ?? room
-          opened = { speakers: ids.filter(id => live.members.includes(id)).map(rt.botOf).filter(Boolean), ordered: opener.botId === undefined }
+          opened = { speakers: ids.filter(id => live.members.includes(id)).map(rt.botOf).filter(Boolean), ordered: opener.botId === undefined, ...(opener.botId === undefined ? {} : { hop: 2 }) }
         } finally {
           relayJudging.delete(room.id)
         }
@@ -1114,6 +1116,7 @@ export function install(rt) {
         slots: speakers.map(member => ({
           id: member.id, name: member.name, status: 'waiting', batch: 1,
           ...(ordered ? { ordered: true } : {}),
+          ...(opened.hop !== undefined ? { hop: opened.hop } : {}),
           // A round a Bot's post opened: what its members answer is Bot-to-Bot, counted
           // by the idle guard even though no one is named (#853).
           ...(opener.botId !== undefined ? { fromBot: true } : {}),

@@ -45,12 +45,13 @@ export function install(rt) {
     return main !== undefined ? [main] : everyone
   }
 
-  // `fromBotId`: the member whose reply this is; none for the owner's message. `after`: a
-  // promise to wait for before the checks, so owner messages apply in their order.
+  // `fromBotId`: the member whose reply this is; none for the owner's message. `hop`: how
+  // many calls that reply is from the owner's message, 1 for a member the owner called.
+  // `after`: a promise to wait for before the checks, so owner messages apply in their order.
   // `busy(id)`: a member already answering, skipped for a Bot's message. `apply(ids)`
   // calls the members in the same synchronous step as the pick, so no other judgment
   // runs between them. Resolves to { ids, reason }: the members to call, in order.
-  async function autoRepliers(given, { text, fromBotId, signal, after, busy = () => false, apply }) {
+  async function autoRepliers(given, { text, fromBotId, hop = 1, signal, after, busy = () => false, apply }) {
     // The store can replace a room record; the caller's may be from before an await.
     const room = rt.roomOf(given.id) ?? given
     const owner = fromBotId === undefined
@@ -87,7 +88,6 @@ export function install(rt) {
     if (state.prefs?.jev !== true || answers == null) return fallback('null', live)
     const p = {}
     eligible.forEach((bot, index) => { p[bot.id] = answers[`m${index}`]?.noul ?? 0 })
-    const hop = owner ? 0 : (live.autoHop ?? 0) + 1
     const bar = owner ? OWNER_BAR : botBar(hop)
     const ranked = eligible.map(bot => bot.id)
       .filter(id => live.members.includes(id) && rt.botOf(id) !== undefined && p[id] >= bar && (owner || !busy(id)))
@@ -100,7 +100,6 @@ export function install(rt) {
     if (left <= 0) return done([], 'cap', { hop, p })
     const ids = ranked.slice(0, Math.min(BOT_MAX, left))
     live.autoTurns = (live.autoTurns ?? 0) + ids.length
-    live.autoHop = hop
     return done(ids, 'jev', { hop, p })
   }
 

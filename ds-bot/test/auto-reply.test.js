@@ -219,11 +219,12 @@ test('autoRepliers: a Bot message needs the hop bar, skips busy members, and a p
   room.autoEpoch = 1
   const first = await env.rt.autoRepliers(room, { text: 'a reply', fromBotId: ids.Writer, busy: id => id === ids.Coder })
   assert.deepEqual(first, { ids: [ids.Tester, ids.Chief], reason: 'jev' })
-  assert.equal(room.autoHop, 1)
+  // A reply two calls from the owner needs 0.7: Chief at 0.75 only.
+  assert.deepEqual(await env.rt.autoRepliers(room, { text: 'a reply', fromBotId: ids.Writer, hop: 2, busy: id => id !== ids.Chief }), { ids: [ids.Chief], reason: 'jev' })
   env.rt.botOf(ids.Writer).private = true
   const second = await env.rt.autoRepliers(room, { text: 'private words', fromBotId: ids.Writer })
   assert.deepEqual(second, { ids: [], reason: 'private' })
-  assert.equal(jev.length, 1)
+  assert.equal(jev.length, 2)
 })
 
 test('1. admin and everyone groups never call Jev; a new group defaults to admin', async (t) => {
@@ -567,3 +568,36 @@ for (const count of [4, 5]) {
     assert.equal(env.rt.roomOf(room.id).autoTurns ?? 0, botPicks)
   })
 }
+
+test('19. two members answer the owner: both replies are judged at hop 1', async (t) => {
+  await fakeJev(t, (body) => {
+    if (body.state.from === 'user') return { p: { Writer: 0.9, Coder: 0.9 } }
+    if (body.state.from === 'Writer') return { p: { Tester: 0.65 } }
+    if (body.state.from === 'Coder') return { p: { Chief: 0.65 } }
+    return { p: {} }
+  })
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Both of you, draft it'))
+  await playRound(env, room.id, name => `${name} posts a full draft section number one.`)
+  const bot = env.audit().filter(line => ['Writer', 'Coder'].includes(nameOf(env, line)))
+  assert.deepEqual(bot.map(line => [nameOf(env, line), line.hop, line.reason]).sort(), [['Coder', 1, 'jev'], ['Writer', 1, 'jev']])
+})
+
+test('20. two parallel replies at hop 1, then a hop-2 reply: bars 0.6, 0.6, 0.7', async (t) => {
+  await fakeJev(t, (body) => {
+    if (body.state.from === 'user') return { p: { Writer: 0.9, Coder: 0.9 } }
+    if (body.state.from === 'Writer') return { p: { Tester: 0.62 } }
+    if (body.state.from === 'Coder') return { p: { Chief: 0.62 } }
+    return { p: { Writer: 0.65 } }
+  })
+  const env = start(t)
+  const { room } = await team(env)
+  await env.emit(room.id, env.userMessage('Both of you, draft it'))
+  const { spoke } = await playRound(env, room.id, name => `${name} posts a full draft section number one.`)
+  const lines = env.audit().filter(line => line.from !== 'user').map(line => [nameOf(env, line), line.hop, line.reason])
+  // Writer and Coder reply in parallel at hop 1 (bar 0.6): their 0.62 picks are called.
+  // Tester and Chief reply at hop 2 (bar 0.7): Writer at 0.65 is not.
+  assert.deepEqual(lines.sort(), [['Chief', 2, 'below'], ['Coder', 1, 'jev'], ['Tester', 2, 'below'], ['Writer', 1, 'jev']])
+  assert.deepEqual(spoke.toSorted(), ['Chief', 'Coder', 'Tester', 'Writer'])
+})
