@@ -601,3 +601,25 @@ test('20. two parallel replies at hop 1, then a hop-2 reply: bars 0.6, 0.6, 0.7'
   assert.deepEqual(lines.sort(), [['Chief', 2, 'below'], ['Coder', 1, 'jev'], ['Tester', 2, 'below'], ['Writer', 1, 'jev']])
   assert.deepEqual(spoke.toSorted(), ['Chief', 'Coder', 'Tester', 'Writer'])
 })
+
+for (const mode of ['admin', 'auto']) {
+  test(`21. [${mode}] a Main Bot's report_back post into a running round gets its report`, async (t) => {
+    await fakeJev(t, body => (body.state.from === 'Chief' ? { p: { Writer: 0.95 } } : { p: {} }))
+    const env = start(t)
+    const { room, ids } = await team(env, { mode })
+    await env.emit(room.id, env.userMessage('@Tester hold the floor'))
+    const running = env.relay(room.id, 'relay')
+    let posted = false
+    const spoke = await drive(env, running, name => `${name} reviewed the plan and it looks right.`, async () => {
+      if (posted) return
+      posted = true
+      await env.rt.postToRoom(env.rt.roomOf(room.id), env.rt.botOf(ids.Chief), 'Please review the release plan.', { reportBack: true })
+      await settle(100)
+    })
+    await settle(100)
+    assert.ok(spoke.length > 1, 'somebody answered the post')
+    const reports = env.sent.filter(entry => entry.message.source.role === 'report')
+    assert.equal(reports.length, 1, 'the poster gets its report')
+    assert.match(reports[0].message.content[0].text, /Writer: Writer reviewed the plan/)
+  })
+}

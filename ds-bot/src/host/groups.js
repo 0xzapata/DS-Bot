@@ -701,11 +701,13 @@ export function install(rt) {
   // A judgment of who answers in an `auto` group (auto-reply.js), inside a running round:
   // the round waits for it, the owner's picks apply in the order the messages came, and
   // a Bot's picks are Bot-to-Bot calls with no caller to wake.
-  function judgeInto(room, round, signal, { text, fromBotId, hop }) {
+  // `picked`: a list that collects the members the judgment calls.
+  function judgeInto(room, round, signal, { text, fromBotId, hop, picked }) {
     const owner = fromBotId === undefined
     round.judging = (round.judging ?? 0) + 1
     const busy = id => round.slots.some(slot => slot.id === id && (slot.status === 'speaking' || slot.status === 'waiting'))
     const apply = (ids) => {
+      picked?.push(...ids)
       const note = owner ? 'new message from the user' : `${rt.botOf(fromBotId)?.name ?? 'A member'} posted in the group`
       callIn(round, ids.map(rt.botOf).filter(Boolean), note, undefined, { ordered: owner, fromBot: !owner, tail: owner, ...(owner ? {} : { hop: (hop ?? 1) + 1 }) })
     }
@@ -1341,13 +1343,12 @@ export function install(rt) {
     if (!idlePost) clearIdleStreak(room)
     const opened = openingCall(room, post)
     if (idlePost && room.idlePaused !== undefined && holdIdleCalls(room, round, sender, opened.speakers, { named, all: (mentionsOf(post, everyone) ?? mentionsIn(text, everyone)).all === true })) return true
-    if (opened.judge) {
-      if (idlePost) return false
-      judgeInto(room, round, round.signal, { text, fromBotId: sender.id })
-      return true
-    }
+    if (opened.judge && idlePost) return false
+    // The judgment fills in the members it calls; the round waits for it before it reports.
+    const picked = []
+    if (opened.judge) judgeInto(room, round, round.signal, { text, fromBotId: sender.id, picked })
     const { speakers, ordered } = opened
-    if (speakers.length === 0) return false
+    if (speakers.length === 0 && !opened.judge) return false
     const by = speakers.filter(peer => named.includes(peer))
     const rest = speakers.filter(peer => !named.includes(peer))
     const note = extra.done ? `${sender.name} finished the work you asked for` : undefined
@@ -1355,7 +1356,7 @@ export function install(rt) {
     callIn(round, rest, note, undefined, { ordered })
     if (rt.isAdminOf(room, sender.id)) for (const peer of speakers) rt.goalTaskWorking?.(room.id, peer.id)
     if (extra.reportBack) {
-      (round.reports ??= []).push({ post: { botId: sender.id, name: sender.name, reportBack: true, ...(extra.sub ? { sub: extra.sub } : {}), ...(extra.fromRoomId ? { fromRoomId: extra.fromRoomId } : {}) }, ids: speakers.map(peer => peer.id), from: round.replies.length })
+      (round.reports ??= []).push({ post: { botId: sender.id, name: sender.name, reportBack: true, ...(extra.sub ? { sub: extra.sub } : {}), ...(extra.fromRoomId ? { fromRoomId: extra.fromRoomId } : {}) }, ids: opened.judge ? picked : speakers.map(peer => peer.id), from: round.replies.length })
     }
     return true
   }
