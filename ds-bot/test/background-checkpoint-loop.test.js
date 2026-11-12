@@ -751,3 +751,74 @@ test('a too-large early draft stops early drafts until a draft is applied', asyn
   assert.deepEqual(seen.slice(0, 6), ['cD0', 's0', 'cF0', 's1', 'cD1', 'cD2'])
   assert.ok(b.balanced())
 })
+
+// A required runtime-context snapshot: each checkpoint condenses it, and DSH puts it back
+// at the next step, so it is never freed. `words` sets its size in tokens (about 1 each).
+const snapshot = (b, words) => b.ctx.systemPrompt.context({ name: 'zz-ctx', order: 10, required: true, interpolate: false, text: 'ctx '.repeat(words) })
+// The context size at each turn request, read when the request is sent.
+const requestSizes = (b) => {
+  const sizes = []
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    if (call.kind === 'turn') sizes.push(b.tokens())
+    return push(call)
+  }
+  return sizes
+}
+
+// Review L1: a snapshot that keeps the part at about 80% of its check line after each
+// checkpoint. No checkpoint can fit under 0.75 x check, so the part makes one summary per
+// checkpoint, as before drafts, and not two.
+test('a large runtime context that comes back is not counted as freed', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  // The turn requests sent before each steward call.
+  const turns = []
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    if (call.kind === 'steward') turns.push(b.kinds('turn').length)
+    return push(call)
+  }
+  b.env.answerSize = 2_000
+  snapshot(b, 11_500)
+  // About 8 cycles of 7 turns each.
+  const index = 58
+  for (let n = 1; n <= index; n += 1) await b.say(`m${n}`)
+  await tick(50)
+  const made = summaries(b)
+  assert.ok(made >= 7 && made <= 9, `checkpoints ${made}: ${seen.join(' ')}`)
+  assert.ok(seen.filter(call => call[0] === 'c').length <= made + 2, seen.join(' '))
+  assert.ok(seen.filter(call => call[0] === 's').length <= made + 2, seen.join(' '))
+  // A checkpoint that frees nothing that stays freed has the steward asked again at the
+  // next turn.
+  for (let n = 1; n < turns.length; n += 1) assert.ok(turns[n] - turns[n - 1] >= 2, `steward at turns ${turns.join(',')}`)
+  const said = b.owner()
+  assert.deepEqual(said, Array.from({ length: index }, (_, n) => `m${n + 1}`))
+  assert.ok(b.balanced())
+})
+
+// A moderate snapshot (about 20% of check): every checkpoint still goes in in the
+// background with one request per cycle, and the part's base counts the snapshot.
+test('a moderate runtime context: background checkpoints in every cycle, sized with it', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  const sizes = requestSizes(b)
+  const applied = []
+  const info = b.ctx.logger.info.bind(b.ctx.logger)
+  b.ctx.logger.info = (template, ...args) => {
+    if (String(template).includes('applied its background checkpoint')) applied.push({ after: args[2], turn: sizes.length })
+    return info(template, ...args)
+  }
+  b.env.answerSize = 2_000
+  snapshot(b, 3_200)
+  let index = 0
+  while (summaries(b) < 6 && index < 120) { index += 1; await b.say(`m${index}`) }
+  await tick(50)
+  const checkpoints = seen.filter(call => call[0] === 'c')
+  assert.equal(summaries(b), 6)
+  assert.ok(checkpoints.every(call => call.startsWith('cD')), seen.join(' '))
+  assert.ok(checkpoints.length <= 7, seen.join(' '))
+  assert.equal(applied.length, 6)
+  // The apply runs before the step that sends the request at `turn`.
+  for (const { after, turn } of applied) assert.ok(Math.abs(after - sizes[turn]) <= 0.05 * sizes[turn], `${after} vs ${sizes[turn]}`)
+})

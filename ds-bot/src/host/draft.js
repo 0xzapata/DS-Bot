@@ -26,6 +26,13 @@ export function summaryInput(session, seqs) {
   return { ...(tools === undefined ? {} : { tools }), messages: system === null ? messages : [system, ...messages] }
 }
 
+// The tokens of the latest runtime-context snapshot when it lies in `seqs`, else 0: DSH
+// puts it back at the next step once a checkpoint condenses it, so it is never freed.
+export function returning(session, measured, seqs) {
+  const last = measured?.nodes?.findLast(node => session.eventAt(node.seq)?.data?.source?.kind === 'runtime-context')
+  return last !== undefined && seqs.includes(last.seq) ? last.tokens : 0
+}
+
 // The span a checkpoint would condense now: every surface node after the system head up
 // to the one before the last answer, which stays.
 export function spanOf(session) {
@@ -96,13 +103,13 @@ export function createDrafts({ rt, write, current, measure, size }) {
     return isDeepStrictEqual(summaryInput(session, entry.seqs), entry.input)
   }
 
-  // The context size once the checkpoint replaces the span.
+  // The context size at the step after the checkpoint replaces the span.
   function after(session, entry) {
     const measured = measure(session)
     const at = measured?.nodes?.findIndex(node => node.seq === entry.seqs[0]) ?? -1
     if (at === -1 || measured.totalTokens === undefined) return Infinity
     const span = measured.nodes.slice(at, at + entry.seqs.length).reduce((total, node) => total + node.tokens, 0)
-    return measured.totalTokens - span + size(entry.result.summary.map(block => block.text).join('\n'))
+    return measured.totalTokens - span + returning(session, measured, entry.seqs) + size(entry.result.summary.map(block => block.text).join('\n'))
   }
 
   // Whether the marked, written draft still matches and fits under `lines`. One that does

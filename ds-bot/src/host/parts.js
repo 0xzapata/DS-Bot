@@ -21,7 +21,7 @@ import { HANDOFF_ACK, HISTORY_TIMEOUT_MS, REPLY_KIND, SOURCE_KIND } from './cons
 import { parseReplies, stackReplies } from '../shared/group-replies.js'
 import { CHECKPOINT_PROMPT, STEWARD_SYSTEM, checkpointCount, checkpointTail, checkpointTailNote, checkpointText, draftLine, linesFor, parseDecision, stewardRequest } from './steward.js'
 import { RESUME_DELAY_MS } from './resume.js'
-import { createDrafts } from './draft.js'
+import { createDrafts, returning } from './draft.js'
 import { clip, createClock, escapeRegExp, estimateTokens, splitRef, textOf } from './text.js'
 import { viaOf } from '../shared/im-platforms.js'
 import { checkShownView, normalizeView, readViewReply, viewCardText, viewReply, viewReplyText } from 'deep-view/core'
@@ -756,6 +756,7 @@ export function install(rt) {
     const engine = engineOf(agent)
     const sessionId = agent.session.id
     const before = tokensOf(agent.session)
+    const back = returning(agent.session, measureOf(agent.session), entry.seqs)
     condensing.add(sessionId)
     try {
       await drafts.apply(agent, entry, (start, end) => engine.compactRegion(start, end, agent, signal))
@@ -766,7 +767,8 @@ export function install(rt) {
       condensing.delete(sessionId)
     }
     rt.renewMemory(sessionId)
-    const after = tokensOf(agent.session) ?? before
+    // The size at the next step, with the runtime context DSH puts back.
+    const after = (tokensOf(agent.session) ?? before) + back
     partBase.set(agent.id, after)
     ctx.logger.info('ds-bot: %s applied its background checkpoint, %d to %d tokens (check line %d)', agent.id, before ?? -1, after ?? -1, lines.check)
     return true
