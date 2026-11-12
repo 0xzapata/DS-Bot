@@ -21,6 +21,7 @@ import { HANDOFF_ACK, HISTORY_TIMEOUT_MS, REPLY_KIND, SOURCE_KIND } from './cons
 import { parseReplies, stackReplies } from '../shared/group-replies.js'
 import { CHECKPOINT_PROMPT, STEWARD_SYSTEM, checkpointCount, checkpointTail, checkpointTailNote, checkpointText, linesFor, parseDecision, stewardRequest } from './steward.js'
 import { RESUME_DELAY_MS } from './resume.js'
+import { createDrafts } from './draft.js'
 import { clip, createClock, escapeRegExp, estimateTokens, splitRef, textOf } from './text.js'
 import { viaOf } from '../shared/im-platforms.js'
 import { checkShownView, normalizeView, readViewReply, viewCardText, viewReply, viewReplyText } from 'deep-view/core'
@@ -251,10 +252,9 @@ export function install(rt) {
       && (lines === undefined || tokens === undefined || tokens - history + replacement <= lines.usable)
   }
 
-  // Lines for the model the Session last routed to; undefined while it has not
-  // routed yet.
-  async function contextLines(session) {
-    const route = session.requestHeader()?.config
+  // Lines for `route`, by default the model the Session last routed to; undefined while
+  // it has not routed yet.
+  async function contextLines(session, route = session.requestHeader()?.config) {
     if (!route?.provider || !route?.model) return undefined
     const info = await ctx.llm.resolveModelInfo(route.provider, route.model)
     return linesFor({ window: info.context?.contextWindow, reserve: route.maxTokens ?? info.defaultMaxTokens, checkRatio: config.checkRatio })
@@ -282,6 +282,21 @@ export function install(rt) {
     return id !== undefined && (rt.selfOf(id) !== undefined || rt.roomOf(id) !== undefined)
   }
   const ownedByBot = target => isBotTarget(target) && !condensing.has(target.session.id)
+  // Background checkpoints (draft.js): a Bot's own chat only, on its own engine.
+  const drafts = createDrafts({
+    rt,
+    write: writeCheckpoint,
+    current: agent => ownChat(agent) && !switches.has(agent.id),
+    measure: session => measureOf(session),
+    size: text => ctx.get('tokenMeter')?.estimateMessage({ role: 'user', content: [{ type: 'text', text }] }) ?? estimateTokens(text),
+  })
+  ctx.effect(() => () => drafts.dispose(), 'ds-bot: background checkpoints')
+  // A Bot's current own chat, on an engine DS Bot condenses through. A local agent CLI
+  // and read-only mode never reach here (checkContext returns first).
+  function ownChat(agent) {
+    const place = placeOf(agent.id)
+    return place?.botId !== undefined && place.roomId === undefined && rt.chatOf(place.botId) === agent.id && engineOf(agent) !== undefined
+  }
   // Condenses a range of a Bot Session the way DS Bot condenses its own parts: the
   // session counts as condensing, so the summary hook writes DS Bot's checkpoint rather
   // than the backend writing one of its own.
@@ -331,7 +346,8 @@ export function install(rt) {
     }
     if (original.summarize !== undefined) {
       engine.summarize = function summarizeForBots(input, agent, signal) {
-        if (isBotTarget(agent)) return writeCheckpoint(input, agent, signal)
+        // A background checkpoint being applied is handed over as it is, with no await.
+        if (isBotTarget(agent)) return drafts.summary(agent.session.id, input) ?? writeCheckpoint(input, agent, signal)
         return original.summarize.call(this, input, agent, signal)
       }
     }
@@ -708,6 +724,7 @@ export function install(rt) {
     const engine = engineOf(agent)
     const before = tokensOf(agent.session)
     const sessionId = agent.session.id
+    drafts.drop(sessionId)
     condensing.add(sessionId)
     try {
       // Through the service itself, past DS Bot's own wrapper: only a call on the
@@ -723,12 +740,36 @@ export function install(rt) {
     } finally {
       condensing.delete(sessionId)
     }
+    drafts.succeeded(sessionId)
     // The prefix cache starts over anyway, so the memory section catches up.
     rt.renewMemory(sessionId)
     const after = tokensOf(agent.session) ?? before
     partBase.set(agent.id, after)
     ctx.logger.info('ds-bot: %s condensed from %d to %d tokens (check line %d, hard line %d)', agent.id, before ?? -1, after ?? -1, lines.check, lines.hard)
     return after < lines.check
+  }
+
+  // Applies a held background checkpoint before a step of a running turn, through the
+  // engine's explicit range, with no model call. Nothing awaits between taking the draft
+  // and the engine's opening marker. False when the engine turned it down.
+  async function applyDraft(agent, entry, lines, signal) {
+    const engine = engineOf(agent)
+    const sessionId = agent.session.id
+    const before = tokensOf(agent.session)
+    condensing.add(sessionId)
+    try {
+      await drafts.apply(agent, entry, (start, end) => engine.compactRegion(start, end, agent, signal))
+    } catch (error) {
+      rt.warn('ds-bot: background checkpoint for %s not applied: %s', agent.id, error?.message ?? error)
+      return false
+    } finally {
+      condensing.delete(sessionId)
+    }
+    rt.renewMemory(sessionId)
+    const after = tokensOf(agent.session) ?? before
+    partBase.set(agent.id, after)
+    ctx.logger.info('ds-bot: %s applied its background checkpoint, %d to %d tokens (check line %d)', agent.id, before ?? -1, after ?? -1, lines.check)
+    return true
   }
 
   // The note a part opened with, as the fresh part shows it. A note DS Bot put
@@ -967,6 +1008,7 @@ export function install(rt) {
     if (place === undefined || switches.has(agent.id) || readOnly() || subagentOut(agent.id)) return undefined
     const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, hard, manual, clean, cutoff, since: Date.now() }
     switches.set(agent.id, job)
+    drafts.drop(agent.id)
     // Settles with the job once the switch is over, moved or not; never rejects.
     return runSwitch(agent, job)
       .catch(error => {
@@ -1270,6 +1312,30 @@ export function install(rt) {
     ? { kind: 'enter', messages: [] }
     : { kind: 'reject' })
 
+  // Applies a background checkpoint the steward chose, once every other pre-step listener
+  // has run: an Auto pick (auto-model.js) that holds the step returns before this, and
+  // the draft then goes in at the step of the turn the pick wakes, sized for the model
+  // picked. A subagent that is out does not stop it, as with an in-place condense; one
+  // the engine turns down leaves the in-turn condense past the hard line, as before.
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    const { agent, signal } = payload
+    if (decision.kind === 'reject' || signal?.aborted || !drafts.marked(agent.id)) return decision
+    const lines = await contextLines(agent.session, agent.model.current()).catch(() => undefined)
+    const entry = signal?.aborted || !ownChat(agent) || readOnly() || switches.has(agent.id) ? undefined : drafts.take(agent, lines)
+    if (entry !== undefined && !await applyDraft(agent, entry, lines, signal) && !signal?.aborted && (tokensOf(agent.session) ?? 0) >= lines.hard) await condense(agent, lines, { inTurn: true, signal })
+    // A Stop while it went in ends the turn before its step: the input this step claimed
+    // stays in the chat, unanswered, as a Stop in its model call leaves it.
+    if (entry !== undefined && signal?.aborted) keepStopped(agent, payload.messages)
+    return decision
+  })
+  const keepStopped = (agent, messages) => {
+    const said = new Set(agent.session.snapshotEvents().filter(event => event.type === 'user/message').map(event => event.data.id))
+    try {
+      for (const message of messages) if (!said.has(message.id)) agent.session.append('user/message', message, { surfaceOp: 'append' })
+    } catch (error) { rt.warn('ds-bot: a stopped message of %s was not kept in its chat: %s', agent.id, error?.message ?? error) }
+  }
+
   // Runs first: an earlier part hands its input on, a part past the hard line makes
   // room before the step (condensed in place, or it stops and goes on in a fresh
   // part), and the backend's own pre-step listener sees the wrapper.
@@ -1315,6 +1381,9 @@ export function install(rt) {
     // A local agent CLI owns its in-session compaction; the DSH Session keeps the
     // full history for read_own_chat and never condenses or switches on size.
     if (rt.isLocalAgentRef?.(rt.botOf(place.botId)?.model ?? rt.botOf(place.botId)?.appliedModel) === true) return next()
+    // A background checkpoint that still fits goes in at the end of this pre-step (below),
+    // so this step makes no room of its own; one that does not is dropped here.
+    if (drafts.ready(agent.id) && drafts.fits(agent, await contextLines(agent.session, payload.modelSelection).catch(() => undefined))) return next()
     const lines = await contextLines(agent.session).catch(() => undefined)
     const tokens = tokensOf(agent.session)
     if (lines === undefined || tokens === undefined || tokens < lines.hard || !grown(agent.id, tokens, lines) || readOnly()) return next()
@@ -1482,6 +1551,8 @@ export function install(rt) {
       }
       return
     }
+    // A background checkpoint waits for the next step.
+    if (drafts.marked(agent.id)) return
     const lines = await contextLines(agent.session)
     const tokens = tokensOf(agent.session)
     if (lines === undefined || tokens === undefined || tokens < lines.check || !grown(agent.id, tokens, lines)) return
@@ -1490,8 +1561,19 @@ export function install(rt) {
     checking.add(agent.id)
     try {
       if (await decide(agent, { midTurn: false }) === 'compact') {
+        // A Bot's own chat writes the checkpoint in the background, and the owner's next
+        // message does not wait for it; it goes in at the next step.
+        if (ownChat(agent)) {
+          if (await drafts.compact(agent, lines)) return
+          // Read live: the plugin may have stopped, the Bot gone or the part moved on, and
+          // a turn that ran meanwhile may have made room already.
+          const now = tokensOf(agent.session)
+          if (drafts.closed() || !ownChat(agent) || readOnly() || switches.has(agent.id) || now === undefined || now < lines.check || !grown(agent.id, now, lines)) return
+        }
         const condensed = await condense(agent, lines, { inTurn: false })
         if (condensed !== false) return
+      } else {
+        drafts.drop(agent.id)
       }
       if (switches.has(agent.id)) return
       if (!await canMakeRoom(agent)) return
@@ -1533,6 +1615,8 @@ export function install(rt) {
       .catch(error => rt.warn('ds-bot: current Session %s is archived in DSH and could not be taken out: %s', sessionId, error))
   }
   ctx.on('workspace/session-stop', keepCurrent)
+  // A stopped Session (a deleted Bot, an archive) writes no background checkpoint.
+  ctx.on('workspace/session-stop', ({ sessionId }) => drafts.drop(sessionId))
   ctx.on('workspace/session-activity', (request, next) => {
     keepCurrent(request)
     return next()
@@ -1807,6 +1891,7 @@ export function install(rt) {
     const live = rt.live.get(current)
     if (live?.turn !== undefined) throw Object.assign(new Error('The Bot is working; wait for it to finish or stop it first'), { code: 'bot/busy' })
     if (subagentOut(current)) refuse(SUBAGENT_OUT, 'bot/busy')
+    drafts.drop(current)
     // DSH turns away every step of an archived Session and every task aimed at it, so
     // the part leaves the archive before it becomes current.
     await ctx.workspaceRegistry.unarchiveSession(partId)
