@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 // A checkpoint that leaves the part above this share of its check line is not used:
 // another cycle would start at once.
-export const AFTER_SHARE = 0.75
+const AFTER_SHARE = 0.75
 // Draft requests per checkpoint cycle (from the part's start or its last checkpoint to
 // its next one). A draft that is dropped unused or whose apply fails spends the rest:
 // the part's next checkpoint is made the way it was before drafts.
@@ -102,29 +102,22 @@ export function createDrafts({ rt, write, current, measure, size }) {
     return measured.totalTokens - span + size(entry.result.summary.map(block => block.text).join('\n'))
   }
 
-  // A held draft that fits under `lines` and still matches; dropped otherwise, and the
-  // part drafts no more this cycle.
-  function usable(agent, entry, lines) {
-    const fits = lines !== undefined && matches(agent.session, entry) && after(agent.session, entry) <= AFTER_SHARE * lines.check
-    if (!fits) {
-      drop(agent.id)
-      requests.set(agent.id, REQUESTS_MAX)
-    }
-    return fits
+  // Whether the marked, written draft still matches and fits under `lines`. One that does
+  // not is dropped, and the part drafts no more this cycle.
+  function fits(agent, lines) {
+    const entry = drafts.get(agent.id)
+    if (entry?.result === undefined || !entry.marked) return false
+    if (lines !== undefined && matches(agent.session, entry) && after(agent.session, entry) <= AFTER_SHARE * lines.check) return true
+    drop(agent.id)
+    requests.set(agent.id, REQUESTS_MAX)
+    return false
   }
 
   // The steward said "compact": the part's draft, started now if none runs, is marked for
-  // the next step. True once it is ready and usable under `lines`.
+  // the next step. True once it is written and fits under `lines`.
   async function compact(agent, lines) {
     const entry = start(agent, { marked: true })
-    if (entry === undefined || !await entry.done || drafts.get(agent.id) !== entry) return false
-    return usable(agent, entry, lines)
-  }
-
-  // Whether the marked draft still fits under `lines`; one that does not is dropped.
-  function fits(agent, lines) {
-    const entry = drafts.get(agent.id)
-    return entry?.result !== undefined && entry.marked && usable(agent, entry, lines)
+    return entry !== undefined && await entry.done && drafts.get(agent.id) === entry && fits(agent, lines)
   }
 
   // Takes the marked draft for this step, synchronously checked under `lines`: once taken
@@ -174,11 +167,9 @@ export function createDrafts({ rt, write, current, measure, size }) {
     compact,
     take,
     fits,
-    ready: sessionId => drafts.get(sessionId)?.result !== undefined && drafts.get(sessionId).marked,
     apply,
     summary,
     drop,
-    held: sessionId => drafts.has(sessionId),
     marked: sessionId => drafts.get(sessionId)?.marked === true,
     // A new cycle: a checkpoint made another way, or a part that becomes current again.
     succeeded: sessionId => requests.delete(sessionId),
