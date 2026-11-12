@@ -500,3 +500,31 @@ test('15. the audit never holds message text', async (t) => {
   for (const word of words) assert.ok(!raw.includes(word), word)
   for (const line of env.audit()) assert.deepEqual(Object.keys(line).sort(), ['from', 'hop', 'p', 'picked', 'reason', 'room', 'time'])
 })
+
+// A Bot's plain post into the group's own Session, as post_to_group sends it.
+const postEvent = (ids, name, text) => ({ type: 'user/message', data: { source: { kind: 'bot', role: 'post', senderSessionId: ids[name], senderName: name, exchangeId: randomUUID() }, content: [{ type: 'text', text: `[Group post from ${name}]\n${text}` }] } })
+const nameOf = (env, line) => (line.from === 'user' ? 'user' : env.rt.botOf(line.from)?.name)
+
+test('16. an owner message and a Main Bot post in one relay, Jev null: the owner message still gets the default', async (t) => {
+  await fakeJev(t, () => ({ status: 500 }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  await env.emit(room.id, env.userMessage('Please plan the launch for Friday'))
+  await env.emit(room.id, postEvent(ids, 'Chief', 'I pushed the new build to staging for everyone.'))
+  const { spoke } = await playRound(env, room.id, name => `${name} replies with the launch plan details.`)
+  assert.ok(spoke.length > 0, 'somebody answers the owner')
+  const owner = env.audit().filter(line => line.from === 'user')
+  assert.equal(owner.length, 1)
+  assert.deepEqual(owner[0].picked, [ids.Chief])
+})
+
+test('17. an owner message and a Bot post in one relay, Jev answering: the owner message is judged as the owner\'s', async (t) => {
+  const jev = await fakeJev(t, body => (body.state.from === 'user' ? { p: { Writer: 0.9 } } : { p: {} }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  await env.emit(room.id, env.userMessage('Please plan the launch for Friday'))
+  await env.emit(room.id, postEvent(ids, 'Chief', 'I pushed the new build to staging for everyone.'))
+  const { spoke } = await playRound(env, room.id, name => `${name} replies with the launch plan details.`)
+  assert.ok(jev.some(body => body.state.from === 'user' && body.state.message === 'Please plan the launch for Friday'))
+  assert.equal(spoke[0], 'Writer')
+})

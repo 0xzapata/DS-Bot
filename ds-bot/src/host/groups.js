@@ -1052,6 +1052,9 @@ export function install(rt) {
       const callsNobody = post => post.member === true && openingSpeakers(room, post).length === 0
       const open = posts.filter(post => post.called !== true)
       const opener = open.findLast(post => !event(post) && !callsNobody(post)) ?? open.findLast(post => !event(post)) ?? open.at(-1) ?? { text: '', quiet: true }
+      // In an `auto` group a Bot's post that opens the relay does not take the place of
+      // the owner's message the rules leave open: that message is judged in the round.
+      const ownerOpen = room.mode === 'auto' && opener.botId !== undefined ? open.findLast(post => userPost(post) && openingCall(room, post).judge) : undefined
       const references = posts.flatMap(post => post.references ?? [])
       // A member a Bot's post calls by name works for that Bot. The saved list is the
       // whole message; the text may be only its opening.
@@ -1152,6 +1155,7 @@ export function install(rt) {
       }
       if (posts.some(post => post.resumed || post.stopped || post.done)) await rt.save()
       releaseParked(room, round)
+      if (ownerOpen !== undefined) judgeInto(room, round, exec.signal, { text: ownerOpen.text ?? '' })
       rt.roomProgress.set(exec.callId, round)
       try {
         await runRound(room, round, exec.signal, exec.agent)
