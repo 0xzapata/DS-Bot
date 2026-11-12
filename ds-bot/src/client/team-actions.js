@@ -201,6 +201,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     exchange: (a, b) => call('exchange', { a, b }).catch(() => []),
     exchangeText: id => call('exchange-text', { id }).catch(() => undefined),
     fileText: file => call('file-text', { file }).catch(() => undefined),
+    groupLine: (roomId, seq) => call('group-line', { roomId, seq }).catch(() => undefined),
     roomProgress: roomId => call('room-progress', { roomId }).catch(() => []),
     earlier: (sessionId, cursor) => call('earlier', { sessionId, cursor: cursor ?? null }),
     // The closed chat of a Bot that was started over (cells.js EarlierDock), shut or open.

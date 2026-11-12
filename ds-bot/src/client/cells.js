@@ -481,8 +481,10 @@ const scrollParent = (node) => {
   return null
 }
 
-function EarlierUser({ row, actions }) {
-  const { shown, folded, control, code, codeHead } = useFold(row.text ?? '')
+// An owner's group line kept by its start only reads the rest from the group log.
+const wholeLine = (reply, sessionId, actions) => reply.length === undefined ? undefined : { length: reply.length, load: () => actions.groupLine(sessionId, reply.logSeq ?? reply.seq) }
+function EarlierUser({ row, actions, sessionId }) {
+  const { shown, folded, control, code, codeHead } = useFold(row.text ?? '', { whole: wholeLine(row, sessionId, actions) })
   const body = row.text && shown !== '' ? h(MarkdownText, { text: shown, labels: mdLabels(), variant: 'compact' }) : null
   const area = foldArea(body, code, codeHead, actions)
   return h('div', { className: 'bt-urow' }, h('div', { className: 'bt-ububble', 'data-folded': folded || undefined },
@@ -619,7 +621,7 @@ export function ChatRows({ items, sessionId, roster, actions, useUi, clock = fal
 function chatRow(row, key, { sessionId, selfId, roster, actions, useUi, onBtwDelete }) {
   switch (row.kind) {
     case 'divider': return h(PartLine, { key, time: row.time })
-    case 'user': return h(EarlierUser, { key, row, actions })
+    case 'user': return h(EarlierUser, { key, row, actions, sessionId })
     case 'answer': return h(AnsweredReply, { key, node: { data: row } })
     // A question or view card closed without an answer on it.
     case 'closed': return row.view === undefined
@@ -988,6 +990,12 @@ function RelayEvent({ reply, bot, sessionId, actions }) {
   return null
 }
 
+function LongUserLine({ reply, sessionId, actions }) {
+  const { shown, folded, control, code, codeHead } = useFold(reply.text, { whole: wholeLine(reply, sessionId, actions) })
+  const area = foldArea(h(MarkdownText, { text: shown, labels: mdLabels(), variant: 'compact' }), code, codeHead, actions)
+  return h('div', { className: 'bt-ububble', 'data-folded': folded || undefined }, control ? h('div', { className: 'bt-fold-body' }, area) : area, control)
+}
+
 function GroupReplies({ sessionId, callId, done, content, error, roster, actions, useUi, useWork }) {
   const [live, setLive] = useState({ replies: [], speaking: [] })
   useEffect(() => {
@@ -1033,7 +1041,7 @@ function GroupReplies({ sessionId, callId, done, content, error, roster, actions
       const bot = roster.byId[reply.botId] ?? { id: reply.botId, name: reply.name, color: reply.color ?? 'gray' }
       if (reply.kind === 'user') {
         return h('div', { key: `user-${index}`, className: 'bt-urow' },
-          h('div', { className: 'bt-ububble' }, h(MarkdownText, { text: reply.text, labels: mdLabels(), variant: 'compact' })),
+          reply.length === undefined ? h('div', { className: 'bt-ububble' }, h(MarkdownText, { text: reply.text, labels: mdLabels(), variant: 'compact' })) : h(LongUserLine, { reply, sessionId, actions }),
           (reply.via !== undefined || Number.isFinite(time)) ? h('div', { className: 'bt-utime', title: clockLabel(time) }, ...(reply.via !== undefined ? [h(ViaTag, { key: 'via', via: reply.via })] : []), Number.isFinite(time) ? messageClock(time) : null) : null)
       }
       if (reply.kind !== undefined) {

@@ -8,6 +8,8 @@ import { createRuntime } from '../index.js'
 import { ROOM_IDLE_RELAY_LIMIT } from '../src/host/constants.js'
 import { isIdleRelayText, lineText } from '../src/host/groups.js'
 import { fakeAttachments, fakeContext } from './fake-ctx.js'
+import * as SpillPolicy from '@deepseek-ai/dsh-spill-policy'
+import { parseReplies } from '../src/shared/group-replies.js'
 
 // A fake team of two Bots in one group; member answers are played back through the
 // session/event listener, so a round runs with no model. Prompts land in the
@@ -181,6 +183,56 @@ test('a message the composer queues mid-round joins the round and leaves the Ses
   assert.deepEqual(result.replies.map(reply => reply.name ?? 'User'), ['Chief', 'User', 'Writer'])
   // Taken out of the queue, the message opens no second round after this one.
   assert.deepEqual(inboxOf(room.id).nextTurn, [])
+})
+
+// DSH's spill policy as the app mounts it (dsh-base cordis.patch.yml: maxInlineTokens
+// 12500), on a host stub: the real handler cuts a long relay result in the middle.
+async function spill(text, roomId) {
+  let handler
+  SpillPolicy.apply({ on: (name, fn) => { if (name === 'tools/post-execute') handler = fn }, get: name => (name === 'spillStore' ? { saveText: async () => ({ kind: 'spill', id: 'x', path: '/spill/x.txt' }) } : undefined), logger: { warn: () => {} } }, { maxInlineTokens: 12_500 })
+  const exec = { name: 'group_relay', callId: 'relay', agent: { session: { header: { id: roomId }, requestHeader: () => undefined }, options: {} } }
+  const decision = await handler(exec, { content: [{ type: 'text', text }] }, async () => ({ kind: 'accept' }))
+  return (decision.content ?? [{ type: 'text', text }]).map(block => block.text ?? '').join('')
+}
+// Live check 3 #5: owner lines sent while a round runs, as the client draws them from
+// the relay result once DSH has bounded it.
+async function ownerLinesDuringRound(t, size) {
+  const { call, emit, userMessage, compose, relay, answer, stop, sent } = start()
+  t.after(stop)
+  const room = await team(call, sent)
+  await emit(room.id, userMessage('Start'))
+  const running = relay(room.id, 'relay')
+  const first = await turnFor(sent)
+  const owner = [1, 2, 3].map(n => `OWNER${n} ${String(n).repeat(size)}`)
+  for (const text of owner) await compose(room.id, text)
+  await answer(first.sessionId, first.message.source.exchangeId, 'one', 1)
+  const done = [first]
+  for (let turn = 2; ; turn += 1) {
+    const next = await turnFor(sent, ...done)
+    if (next === undefined) break
+    done.push(next)
+    await answer(next.sessionId, next.message.source.exchangeId, `reply ${turn}`, turn)
+  }
+  const shown = parseReplies(await spill(await running, room.id))
+  return { call, room, owner, shown, users: shown.replies.filter(reply => reply.kind === 'user') }
+}
+
+test('long owner lines sent mid-round survive DSH\'s cut of the relay result, and read whole from the log', async (t) => {
+  const { call, room, owner, shown, users } = await ownerLinesDuringRound(t, 60_000)
+  assert.equal(shown.broken, false)
+  assert.deepEqual(users.map(reply => [reply.text.length, reply.length]), owner.map(text => [4_000, text.length]))
+  for (const [index, reply] of users.entries()) {
+    assert.ok(owner[index].startsWith(reply.text))
+    assert.deepEqual((await call('group-line', { roomId: room.id, seq: reply.seq })).value, { text: owner[index], whole: true })
+  }
+  assert.equal((await call('group-line', { roomId: room.id, seq: 9_999 })).ok, false, 'a line not in the log: the client shows the start')
+})
+
+test('short owner lines sent mid-round are in the relay result unchanged', async (t) => {
+  const { owner, shown, users } = await ownerLinesDuringRound(t, 2_000)
+  assert.equal(shown.broken, false)
+  assert.deepEqual(users.map(reply => reply.text), owner)
+  assert.ok(users.every(reply => reply.seq === undefined && reply.length === undefined))
 })
 
 test('a plain message steered mid-round is answered by everyone, admin first, inside the round', async (t) => {

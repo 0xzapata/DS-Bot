@@ -197,6 +197,9 @@ const ROOM_READ_MAX = 30
 const lostSession = error => error?.code === 'session/not-found' || /\bis corrupt\b|\bcorrupt session log\b/i.test(String(error?.message ?? ''))
 const fileLine = file => `[File "${file.name}" (${file.bytes} bytes) attached]`
 
+// Of an owner's line sent while a round runs, the relay result keeps this much.
+const RELAY_USER_MAX = 4_000
+
 export function install(rt) {
   const { ctx } = rt
 
@@ -741,7 +744,12 @@ export function install(rt) {
     const members = room.members.map(rt.botOf).filter(Boolean)
     for (const line of lines) {
       appendRoom(room, { who: 'User', text: line.text, ...(line.via ? { via: line.via } : {}) })
-      round.replies.push({ kind: 'user', text: line.text, time: Date.now(), ...(line.via ? { via: line.via } : {}) })
+      // The relay result keeps the line's start and its log seq: DSH cuts a long result in
+      // the middle, and the cut JSON loses every reply it runs through.
+      // ponytail: about ten long lines in one round still go over DSH's 12,500-token limit;
+      // the client then loses the middle ones. Upgrade: draw owner lines from the log.
+      const long = line.text.length > RELAY_USER_MAX ? { seq: room.seq, length: line.text.length } : {}
+      round.replies.push({ kind: 'user', text: headOf(line.text, RELAY_USER_MAX), ...long, time: Date.now(), ...(line.via ? { via: line.via } : {}) })
       const { all, found } = mentionsIn(line.text, members)
       const note = all || found.length > 0 ? 'the user mentioned you' : 'new message from the user'
       const { speakers, ordered, judge } = openingCall(room, { text: line.text })

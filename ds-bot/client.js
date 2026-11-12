@@ -2327,6 +2327,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     exchange: (a, b) => call2("exchange", { a, b }).catch(() => []),
     exchangeText: (id) => call2("exchange-text", { id }).catch(() => void 0),
     fileText: (file) => call2("file-text", { file }).catch(() => void 0),
+    groupLine: (roomId, seq) => call2("group-line", { roomId, seq }).catch(() => void 0),
     roomProgress: (roomId) => call2("room-progress", { roomId }).catch(() => []),
     earlier: (sessionId, cursor) => call2("earlier", { sessionId, cursor: cursor ?? null }),
     // The closed chat of a Bot that was started over (cells.js EarlierDock), shut or open.
@@ -14361,8 +14362,9 @@ var scrollParent = (node) => {
   }
   return null;
 };
-function EarlierUser({ row, actions }) {
-  const { shown, folded, control, code, codeHead } = useFold(row.text ?? "");
+var wholeLine = (reply, sessionId, actions) => reply.length === void 0 ? void 0 : { length: reply.length, load: () => actions.groupLine(sessionId, reply.logSeq ?? reply.seq) };
+function EarlierUser({ row, actions, sessionId }) {
+  const { shown, folded, control, code, codeHead } = useFold(row.text ?? "", { whole: wholeLine(row, sessionId, actions) });
   const body = row.text && shown !== "" ? (0, import_react32.createElement)(import_dsh_client_ui_primitives.MarkdownText, { text: shown, labels: mdLabels3(), variant: "compact" }) : null;
   const area = foldArea(body, code, codeHead, actions);
   return (0, import_react32.createElement)(
@@ -14494,7 +14496,7 @@ function chatRow(row, key, { sessionId, selfId, roster, actions, useUi, onBtwDel
     case "divider":
       return (0, import_react32.createElement)(PartLine, { key, time: row.time });
     case "user":
-      return (0, import_react32.createElement)(EarlierUser, { key, row, actions });
+      return (0, import_react32.createElement)(EarlierUser, { key, row, actions, sessionId });
     case "answer":
       return (0, import_react32.createElement)(AnsweredReply, { key, node: { data: row } });
     // A question or view card closed without an answer on it.
@@ -14848,6 +14850,11 @@ function RelayEvent({ reply, bot, sessionId, actions }) {
   }
   return null;
 }
+function LongUserLine({ reply, sessionId, actions }) {
+  const { shown, folded, control, code, codeHead } = useFold(reply.text, { whole: wholeLine(reply, sessionId, actions) });
+  const area = foldArea((0, import_react32.createElement)(import_dsh_client_ui_primitives.MarkdownText, { text: shown, labels: mdLabels3(), variant: "compact" }), code, codeHead, actions);
+  return (0, import_react32.createElement)("div", { className: "bt-ububble", "data-folded": folded || void 0 }, control ? (0, import_react32.createElement)("div", { className: "bt-fold-body" }, area) : area, control);
+}
 function GroupReplies({ sessionId, callId, done, content, error, roster, actions, useUi, useWork }) {
   const [live, setLive] = (0, import_react32.useState)({ replies: [], speaking: [] });
   (0, import_react32.useEffect)(() => {
@@ -14897,7 +14904,7 @@ function GroupReplies({ sessionId, callId, done, content, error, roster, actions
         return (0, import_react32.createElement)(
           "div",
           { key: `user-${index}`, className: "bt-urow" },
-          (0, import_react32.createElement)("div", { className: "bt-ububble" }, (0, import_react32.createElement)(import_dsh_client_ui_primitives.MarkdownText, { text: reply.text, labels: mdLabels3(), variant: "compact" })),
+          reply.length === void 0 ? (0, import_react32.createElement)("div", { className: "bt-ububble" }, (0, import_react32.createElement)(import_dsh_client_ui_primitives.MarkdownText, { text: reply.text, labels: mdLabels3(), variant: "compact" })) : (0, import_react32.createElement)(LongUserLine, { reply, sessionId, actions }),
           reply.via !== void 0 || Number.isFinite(time) ? (0, import_react32.createElement)("div", { className: "bt-utime", title: clockLabel(time) }, ...reply.via !== void 0 ? [(0, import_react32.createElement)(ViaTag, { key: "via", via: reply.via })] : [], Number.isFinite(time) ? messageClock(time) : null) : null
         );
       }
