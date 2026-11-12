@@ -6,9 +6,6 @@
 // matches its Session is dropped, and the part makes room the way it always did.
 import { isDeepStrictEqual } from 'node:util'
 
-// A checkpoint that leaves the part above this share of its check line is not used:
-// another cycle would start at once.
-const AFTER_SHARE = 0.75
 // Draft requests per checkpoint cycle (from the part's start or its last checkpoint to
 // its next one). A draft that is dropped unused or whose apply fails spends the rest:
 // the part's next checkpoint is made the way it was before drafts.
@@ -91,7 +88,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
     const entry = drafts.get(agent.id)
     if (entry?.result === undefined) return false
     const same = lines !== undefined && matches(agent.session, entry)
-    if (same && after(agent.session, entry) <= AFTER_SHARE * lines.check) return true
+    if (same && after(agent.session, entry) <= lines.check) return true
     if (same) tooBig.set(agent.id, entry.result)
     drop(agent.id)
     requests.set(agent.id, REQUESTS_MAX)
@@ -106,7 +103,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
     if (closed || (requests.get(id) ?? 0) >= REQUESTS_MAX || span === undefined) return false
     // Predicts from the part's latest summary too large or made without a draft.
     const big = tooBig.get(id)
-    if (big !== undefined && after(agent.session, { seqs: span.seqs, result: big }) > AFTER_SHARE * lines.check) return false
+    if (big !== undefined && after(agent.session, { seqs: span.seqs, result: big }) > lines.check) return false
     requests.set(id, (requests.get(id) ?? 0) + 1)
     const entry = { ...span, abort: new AbortController() }
     drafts.set(id, entry)
