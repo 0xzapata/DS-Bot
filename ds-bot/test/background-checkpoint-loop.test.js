@@ -1183,3 +1183,37 @@ test('a side request at a fresh part\'s opening does not set its base', async (t
   assert.equal(seen.filter(call => call === 'H').length, 1, order)
   assert.equal(parts.made(), 1, order)
 })
+
+// A model switch that fails (MODEL_SWITCH_COMPACTION_FAILED: 20,000 window, 4,000 of output,
+// no budget left after the headroom) took the owner's message from the inbox and never
+// wrote it. It is kept in the chat, unanswered and once, and is not sent again by itself;
+// the next message on a model that fits is answered with both.
+test('a failed model switch keeps the owner\'s message in the chat once', async (t) => {
+  const b = await boot(t, { models: { m: 160_000, small: 20_000, ok: 80_000 }, compaction: { headroomTokens: 16_384 } })
+  const info = b.ctx.llm.resolveModelInfo.bind(b.ctx.llm)
+  b.ctx.llm.resolveModelInfo = async (...args) => ({ ...await info(...args), defaultMaxTokens: 4_000 })
+  const errors = []
+  b.ctx.on('agent/error', ({ error }) => errors.push(error?.code ?? String(error)))
+  b.env.answerSize = 200
+  await b.say('before')
+  await b.agent.model.select({ provider: P, model: 'small' })
+  await b.say('lost')
+  assert.deepEqual(errors, ['MODEL_SWITCH_COMPACTION_FAILED'])
+  assert.deepEqual(b.owner(), ['before', 'lost'])
+  assert.equal(b.agent.inbox.hasPending, false)
+  const calls = b.env.calls.length
+  const turns = b.types().filter(type => type === 'turn/start').length
+  await tick(200)
+  assert.equal(b.env.calls.length, calls, 'no model request by itself')
+  assert.equal(b.types().filter(type => type === 'turn/start').length, turns, 'no new turn by itself')
+  await b.agent.model.select({ provider: P, model: 'ok' })
+  await b.say('again')
+  assert.deepEqual(errors, ['MODEL_SWITCH_COMPACTION_FAILED'])
+  assert.deepEqual(b.owner(), ['before', 'lost', 'again'])
+  const last = b.kinds('turn').at(-1)
+  assert.equal(last.model, 'ok')
+  const said = last.options.messages.filter(message => message.role === 'user').map(textOf)
+  assert.equal(said.filter(text => text === 'lost').length, 1)
+  assert.equal(said.filter(text => text === 'again').length, 1)
+  assert.ok(textOf(b.events().findLast(event => event.type === 'assistant/message').data.message).startsWith('answer to again'))
+})

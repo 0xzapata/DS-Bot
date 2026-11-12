@@ -84,6 +84,8 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on agent/created',
     'effect ds-bot: wake parts that wait for their run mode',
     'on agent/pre-step',
+    'on agent/error',
+    'on session/event',
     'on agent/pre-step (prepend)',
     'on system-prompt/assemble (prepend)',
     'on agent/request-error (prepend)',

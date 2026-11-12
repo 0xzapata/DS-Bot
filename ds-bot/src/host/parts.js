@@ -1340,6 +1340,7 @@ export function install(rt) {
     const decision = await next()
     const { agent, signal } = payload
     if (payload.step === 1) turnStart.set(agent.id, { tokens: tokensOf(agent.session), base: partBase.get(agent.id) })
+    if (decision.kind !== 'reject' && placeOf(agent.id) !== undefined) stepInput.set(agent.id, payload.messages)
     if (decision.kind === 'reject' || signal?.aborted || !drafts.marked(agent.id)) return decision
     const lines = await contextLines(agent.session, agent.model.current()).catch(() => undefined)
     const entry = signal?.aborted || !ownChat(agent) || readOnly() || switches.has(agent.id) ? undefined : drafts.take(agent, lines)
@@ -1349,6 +1350,15 @@ export function install(rt) {
     if (entry !== undefined && signal?.aborted) keepStopped(agent, payload.messages)
     return decision
   })
+  // A model switch that fails (MODEL_SWITCH_COMPACTION_FAILED) throws after the step
+  // took its input from the inbox and before DSH writes it: the input goes into the chat,
+  // unanswered, as a Stop leaves it. Not back into the inbox, where it would fail again
+  // at every turn.
+  const stepInput = new Map()
+  ctx.on('agent/error', ({ agent, error }) => {
+    if (error?.code === 'MODEL_SWITCH_COMPACTION_FAILED' && stepInput.has(agent.id)) keepStopped(agent, stepInput.get(agent.id))
+  })
+  ctx.on('session/event', (session, event) => { if (event.type === 'turn/end') stepInput.delete(session.id) })
   const keepStopped = (agent, messages) => {
     const said = new Set(agent.session.snapshotEvents().filter(event => event.type === 'user/message').map(event => event.data.id))
     try {
