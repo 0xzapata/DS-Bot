@@ -1,0 +1,188 @@
+// Background checkpoints for a Bot's own chat. Once the steward says "compact" (or, from
+// the draft line on, ahead of it), the checkpoint is written while the Bot is idle, from
+// the same prefix as its last request, and held here in memory. Nothing is written to the
+// Session until the next step of a turn applies it, with no model call, in place of the
+// idle maintenance pass that held the owner's next message back. A draft that no longer
+// matches its Session is dropped, and the part makes room the way it always did.
+import { isDeepStrictEqual } from 'node:util'
+
+// A checkpoint that leaves the part above this share of its check line is not used:
+// another cycle would start at once.
+export const AFTER_SHARE = 0.75
+// Failed drafts in a row before a part stops drafting, until its next checkpoint.
+const FAILURES_MAX = 2
+const DRAFT_TIMEOUT_MS = 600_000
+
+// What the backend's summary hook will be given for a span: the system head on surface
+// node 0, then the span's own messages, and the tools of the last request
+// (dsh-compaction-basic buildSummarizationInput).
+export function summaryInput(session, seqs) {
+  const head = session.eventAt(session.surface.nodes[0])
+  const system = head?.type === 'system/message' ? session.deriveEventMessage(head) : null
+  const messages = seqs.map(seq => session.deriveEventMessage(session.eventAt(seq))).filter(message => message !== null)
+  const tools = session.requestHeader()?.tools
+  return { ...(tools === undefined ? {} : { tools }), messages: system === null ? messages : [system, ...messages] }
+}
+
+// The span a checkpoint would condense now: every surface node after the system head up
+// to the one before the last answer, which stays.
+export function spanOf(session) {
+  const nodes = session.surface.nodes
+  const first = session.eventAt(nodes[0])?.type === 'system/message' ? 1 : 0
+  const last = nodes.findLastIndex(seq => session.eventAt(seq)?.type === 'assistant/message')
+  if (last - first < 1) return undefined
+  const seqs = nodes.slice(first, last)
+  return { seqs, generation: session.surface.replaceGeneration, input: summaryInput(session, seqs) }
+}
+
+// `write(input, agent, signal)`: the checkpoint for `input` (parts.js
+// writeCheckpoint). `current(agent)`: the part is still its Bot's current own chat and
+// no switch runs. `measure(session)` prices the Session, `size(text)` one message.
+export function createDrafts({ rt, write, current, measure, size }) {
+  /** @type {Map<string, {seqs:number[], generation:number, input:any, marked:boolean, abort:AbortController, done:Promise<boolean>, result?:any}>} */
+  const drafts = new Map()
+  const failures = new Map()
+  // Parts whose draft went stale before a step: their next checkpoint is made the way it
+  // was before drafts, once.
+  const stale = new Set()
+  // The draft whose summary the hook hands over during an apply, per Session.
+  const applying = new Map()
+  let closed = false
+
+  // Starts a draft unless one is held or running: one per part.
+  function start(agent, { marked = false } = {}) {
+    const id = agent.id
+    const held = drafts.get(id)
+    if (held !== undefined) {
+      held.marked ||= marked
+      return held
+    }
+    if (closed || (failures.get(id) ?? 0) >= FAILURES_MAX) return undefined
+    const span = spanOf(agent.session)
+    if (span === undefined) return undefined
+    const entry = { ...span, marked, abort: new AbortController() }
+    drafts.set(id, entry)
+    entry.done = (async () => {
+      try {
+        const result = await write(span.input, agent, AbortSignal.any([entry.abort.signal, AbortSignal.timeout(DRAFT_TIMEOUT_MS)]))
+        // Read live: the part may have moved on, been dropped, or changed meanwhile.
+        if (drafts.get(id) !== entry) return false
+        if (!current(agent)) {
+          drafts.delete(id)
+          return false
+        }
+        entry.result = result
+        return true
+      } catch (error) {
+        if (drafts.get(id) !== entry) return false
+        drafts.delete(id)
+        failures.set(id, (failures.get(id) ?? 0) + 1)
+        rt.warn('ds-bot: background checkpoint for %s failed (%d in a row): %s', id, failures.get(id), error?.message ?? error)
+        return false
+      }
+    })()
+    return entry
+  }
+
+  // The span is still on the surface as it was drafted: same replacement generation,
+  // same nodes in a row, same messages (a pruned or offloaded node reads differently).
+  function matches(session, entry) {
+    if (session.surface.replaceGeneration !== entry.generation) return false
+    const nodes = session.surface.nodes
+    const at = nodes.indexOf(entry.seqs[0])
+    if (at === -1 || !isDeepStrictEqual(nodes.slice(at, at + entry.seqs.length), entry.seqs)) return false
+    return isDeepStrictEqual(summaryInput(session, entry.seqs), entry.input)
+  }
+
+  // The context size once the checkpoint replaces the span.
+  function after(session, entry) {
+    const measured = measure(session)
+    const at = measured?.nodes?.findIndex(node => node.seq === entry.seqs[0]) ?? -1
+    if (at === -1 || measured.totalTokens === undefined) return Infinity
+    const span = measured.nodes.slice(at, at + entry.seqs.length).reduce((total, node) => total + node.tokens, 0)
+    return measured.totalTokens - span + size(entry.result.summary.map(block => block.text).join('\n'))
+  }
+
+  // A held draft that fits under `lines` and still matches; dropped otherwise.
+  function usable(agent, entry, lines) {
+    const fits = lines !== undefined && matches(agent.session, entry) && after(agent.session, entry) <= AFTER_SHARE * lines.check
+    if (!fits) drop(agent.id)
+    return fits
+  }
+
+  // The steward said "compact": the part's draft, started now if none runs, is marked for
+  // the next step. True once it is ready and usable under `lines`.
+  async function compact(agent, lines) {
+    if (stale.delete(agent.id)) return false
+    const entry = start(agent, { marked: true })
+    if (entry === undefined || !await entry.done || drafts.get(agent.id) !== entry) return false
+    return usable(agent, entry, lines)
+  }
+
+  // Whether the marked draft still fits under `lines`; one that does not is dropped, and
+  // the part's next checkpoint is made the way it was before drafts.
+  function fits(agent, lines) {
+    const entry = drafts.get(agent.id)
+    if (entry?.result === undefined || !entry.marked) return false
+    if (usable(agent, entry, lines)) return true
+    stale.add(agent.id)
+    return false
+  }
+
+  // Takes the marked draft for this step, synchronously checked under `lines`: once taken
+  // it is gone, so it is applied at most once.
+  function take(agent, lines) {
+    if (!fits(agent, lines)) return undefined
+    const entry = drafts.get(agent.id)
+    drafts.delete(agent.id)
+    return entry
+  }
+
+  // Runs `region` (the engine's compactRegion) with the summary hook answering from `entry`.
+  async function apply(agent, entry, region) {
+    applying.set(agent.id, entry)
+    try {
+      const result = await region(entry.seqs[0], entry.seqs.at(-1))
+      failures.delete(agent.id)
+      return result
+    } finally {
+      applying.delete(agent.id)
+    }
+  }
+
+  // The summary hook during an apply: the held summary, returned with no await, and only
+  // for the input it was written from. Undefined when no apply runs for this Session.
+  function summary(sessionId, input) {
+    const entry = applying.get(sessionId)
+    if (entry === undefined) return undefined
+    if (!isDeepStrictEqual(input, entry.input)) throw new Error('the background checkpoint no longer matches the conversation')
+    return entry.result
+  }
+
+  function drop(sessionId) {
+    const entry = drafts.get(sessionId)
+    if (entry === undefined) return
+    drafts.delete(sessionId)
+    entry.abort.abort(new Error('the background checkpoint was dropped'))
+  }
+
+  return {
+    start,
+    compact,
+    take,
+    fits,
+    ready: sessionId => drafts.get(sessionId)?.result !== undefined && drafts.get(sessionId).marked,
+    apply,
+    summary,
+    drop,
+    held: sessionId => drafts.has(sessionId),
+    marked: sessionId => drafts.get(sessionId)?.marked === true,
+    // A checkpoint made another way counts as a success too.
+    succeeded: sessionId => failures.delete(sessionId),
+    closed: () => closed,
+    dispose() {
+      closed = true
+      for (const sessionId of drafts.keys()) drop(sessionId)
+    },
+  }
+}
