@@ -1049,3 +1049,30 @@ test('fixed content above the window: an overflow does not move on to fresh part
   assert.ok(order.split('|').every(part => part.split(' ').filter(call => call === 'NEW').length <= 1), order)
   assert.ok(seen.filter(call => call === 'X').length <= 4, order)
 })
+
+// Live check 4 (80,000 window): blocking checkpoints leave the part at about 98% of the
+// check line (113 skills), and each owner turn adds about 6% of it (3,700-character
+// answers). The steward runs by the hard line, so the part never reaches the window and
+// never moves on.
+test('a base just under the check line: the steward runs by the hard line, not past the window', async (t) => {
+  const b = await boot(t, { skills: 113 })
+  const seen = calls(b)
+  const parts = freshParts(b, seen, { enforce: true })
+  // The chat's size at each steward call: the summary request after it carries as much.
+  const at = []
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    if (call.kind === 'steward') at.push(b.tokens())
+    return push(call)
+  }
+  b.env.answerSize = 3_700
+  for (let index = 1; index <= 24; index += 1) await parts.say(`m${index}`)
+  await tick(100)
+  const order = `${seen.join(' ')} steward at ${at.join(',')}`
+  assert.ok(at.every(size => size < WINDOW), order)
+  assert.ok(summaries(b) >= 5, order)
+  assert.equal(parts.made(), 0, order)
+  assert.ok(!seen.includes('X'), order)
+  assert.ok(seen.filter(call => call[0] === 's').length <= summaries(b) + 1, order)
+  assert.deepEqual(b.owner(), Array.from({ length: 24 }, (_, n) => `m${n + 1}`))
+})

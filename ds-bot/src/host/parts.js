@@ -906,7 +906,12 @@ export function install(rt) {
   const currentOf = owner => (owner.roomId === undefined ? rt.chatOf(owner.botId)
     : owner.botId === undefined ? rt.sessionOfRoom(rt.roomOf(owner.roomId))
       : rt.roomOf(owner.roomId)?.sessions?.[owner.botId])
-  const grown = (sessionId, tokens, lines) => tokens >= (partBase.get(sessionId) ?? 0) + lines.check / 4
+  // A base under the check line (a blocking checkpoint can leave it near it) lets the
+  // steward run by the hard line at the latest; one at or above it waits a full quarter.
+  const grown = (sessionId, tokens, lines) => {
+    const base = partBase.get(sessionId) ?? 0
+    return tokens >= (base < lines.check ? Math.min(base + lines.check / 4, lines.hard) : base + lines.check / 4)
+  }
   // A read-only process (another dsh holds the team) neither condenses nor switches.
   const readOnly = () => rt.readOnly() !== undefined
   // A subagent run is a child of the part, and archiving the part stops it, so its
