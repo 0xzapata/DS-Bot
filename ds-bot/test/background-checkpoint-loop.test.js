@@ -1302,3 +1302,49 @@ test('fixed content at 34% of check, long owner messages: the checkpoint list is
   assert.deepEqual(over, [], line)
   assert.equal(b.owner().length, 12)
 })
+
+// A checkpoint lists the owner's messages word for word; a message DSH keeps after it
+// (a switch's retained tail, the last node of an in-turn condense) is not listed too.
+const asked = (b, tags) => {
+  const users = b.kinds('turn').at(-1).options.messages.filter(m => m.role === 'user').map(textOf)
+  const list = (users.find(text => text.includes('[Checkpoint ')) ?? '').split('## Messages to you, word for word')[1] ?? ''
+  return Object.fromEntries(tags.map(tag => [tag, list.split('\n').filter(row => row.includes(`User: ${tag} `)).length + users.filter(text => text.startsWith(`${tag} `)).length]))
+}
+const widen = b => {
+  const info = b.ctx.llm.resolveModelInfo.bind(b.ctx.llm)
+  b.ctx.llm.resolveModelInfo = async (...args) => ({ ...await info(...args), defaultMaxTokens: 4_000 })
+}
+
+test('a model switch that condenses: each owner message is in the request once', async (t) => {
+  const b = await boot(t, { models: { m: 160_000, ok: 80_000 }, compaction: { headroomTokens: 16_384 } })
+  widen(b)
+  b.env.echo = 8
+  b.env.answerSize = 22_000
+  const tags = Array.from({ length: 13 }, (_, n) => `q${String(n + 1).padStart(2, '0')}`)
+  for (const tag of tags) await b.say(`${tag} ${'p'.repeat(300)}`)
+  await b.agent.model.select({ provider: P, model: 'ok' })
+  await b.say('sw after switch')
+  assert.equal(b.kinds('checkpoint').length, 1, 'DSH condensed once')
+  assert.deepEqual(asked(b, tags), Object.fromEntries(tags.map(tag => [tag, 1])))
+})
+
+test('an in-turn condense whose last node is an owner message: that message is in the request once', async (t) => {
+  const b = await boot(t, { models: { m: WINDOW, small: 20_000 }, compaction: { headroomTokens: 16_384 } })
+  widen(b)
+  b.env.echo = 8
+  b.env.answerSize = 2_000
+  const tags = []
+  for (let i = 1; b.tokens() < 10_200 && i <= 30; i += 1) {
+    tags.push(`k${i}`)
+    await b.say(`k${i} ${'p'.repeat(3_000)}`)
+  }
+  // A switch that fails keeps `kx` as the last node; the next step condenses in-turn.
+  await b.agent.model.select({ provider: P, model: 'small' })
+  tags.push('kx')
+  await b.say(`kx ${'p'.repeat(16_000)}`)
+  await b.agent.model.select({ provider: P, model: 'm' })
+  tags.push('k99')
+  await b.say('k99 short')
+  assert.ok(b.kinds('checkpoint').length <= 3, 'a capped number of checkpoint requests')
+  assert.deepEqual(asked(b, ['kx', 'k99']), { kx: 1, k99: 1 })
+})

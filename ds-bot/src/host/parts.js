@@ -610,7 +610,7 @@ export function install(rt) {
       budget: Math.min(RECENT_TOKENS, Math.floor((lines?.check ?? 4 * RECENT_TOKENS) / 4), lines === undefined ? Infinity : Math.max(0, Math.floor(AFTER_SHARE * lines.check - fixed))),
       group: place?.roomId !== undefined,
       number: place === undefined ? 1 : partsOf(place.botId, place.roomId).length,
-      through,
+      through: through ?? seqs?.at(-1),
     })
     const text = checkpointText({ ...fields, kept, more })
     return {
