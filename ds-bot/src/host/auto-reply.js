@@ -13,9 +13,9 @@ const OWNER_BAR = 0.5
 const OWNER_MAX = 3
 const BOT_MAX = 2
 // Turns the judgment may start per owner message, across rounds.
-export const AUTO_TURN_CAP = 8
+const AUTO_TURN_CAP = 8
 // The bar for the nth Bot-to-Bot hop since the owner wrote: each hop needs more certainty.
-export const botBar = hop => Math.min(0.9, 0.6 + 0.1 * (hop - 1))
+const botBar = hop => Math.min(0.9, 0.6 + 0.1 * (hop - 1))
 
 export function install(rt) {
   const { home, state } = rt
@@ -74,7 +74,14 @@ export function install(rt) {
     const judged = { message: String(text ?? '').slice(0, MESSAGE_CHARS), from: owner ? 'user' : rt.botOf(fromBotId)?.name ?? 'a member', group: room.name }
     // A Stop ends the wait at once.
     const stopped = new Promise(resolve => signal?.addEventListener('abort', () => resolve(null), { once: true }))
-    const answers = await Promise.race([rt.decide(judged, questions, { kind: 'judgment', sessionId: rt.sessionOfRoom(room), botId: fromBotId }), stopped])
+    // A judgment that throws counts as none: the owner's message still gets the default.
+    let answers
+    try {
+      answers = await Promise.race([rt.decide(judged, questions, { kind: 'judgment', sessionId: rt.sessionOfRoom(room), botId: fromBotId }), stopped])
+    } catch (error) {
+      rt.warn('ds-bot: reply judgment in %s failed: %s', room.name, error?.message ?? error)
+      answers = null
+    }
     await after
     // Read live: while Jev judged, the owner may have stopped, written again, changed the
     // mode, the members or the Jev switch, or deleted the group.

@@ -623,3 +623,14 @@ for (const mode of ['admin', 'auto']) {
     assert.match(reports[0].message.content[0].text, /Writer: Writer reviewed the plan/)
   })
 }
+
+test('22. a judgment that throws counts as null: the owner default answers, the relay does not fail', async (t) => {
+  await fakeJev(t, () => ({ p: {} }))
+  const env = start(t)
+  const { room } = await team(env)
+  env.rt.decide = async () => { throw new Error('boom') }
+  await env.emit(room.id, env.userMessage('anyone?'))
+  const { spoke } = await playRound(env, room.id, () => 'Chief answers the question in full here.')
+  assert.deepEqual(spoke, ['Chief'])
+  assert.deepEqual(env.audit().map(line => [nameOf(env, line), line.reason]), [['user', 'null'], ['Chief', 'null']])
+})
