@@ -1394,6 +1394,10 @@ export function install(rt) {
     if (rt.isLocalAgentRef?.(rt.botOf(place.botId)?.model ?? rt.botOf(place.botId)?.appliedModel) === true) return next()
     // A background checkpoint that still fits goes in at the end of this pre-step (below),
     // so this step makes no room of its own; one that does not is dropped here.
+    // ponytail: a step past the hard line while a draft's summary request is still open
+    // asks the steward again and makes a blocking summary instead of waiting for the
+    // draft. Ceiling: one doubled pair of requests, nothing lost. Upgrade: hold the step
+    // until the open draft ends.
     if (drafts.marked(agent.id) && drafts.fits(agent, await contextLines(agent.session, payload.modelSelection).catch(() => undefined))) return next()
     const lines = await contextLines(agent.session).catch(() => undefined)
     const tokens = tokensOf(agent.session)

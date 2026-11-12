@@ -319,11 +319,11 @@ test('a Stop during the draft leaves it running; a Stop during the apply loses n
   assert.equal(b.owner().at(-1), 'after')
 })
 
-// 8. A summary that would leave the part above the check line: the foreground path.
+// 8. A summary that would leave the part above 0.75 × check: the foreground path.
 test('a checkpoint that leaves the part too large is not used', async (t) => {
   const b = await boot(t)
-  // ~17,000 tokens of summary: over the check line (16,000) once the tail is added.
-  b.env.checkpointText = 'S'.repeat(68_000)
+  // ~13,000 tokens of summary: over 0.75 × 16,000 once the tail is added.
+  b.env.checkpointText = 'S'.repeat(52_000)
   await grow(b)
   await settle(() => b.kinds('checkpoint').length >= 1)
   await b.quiet()
@@ -350,14 +350,14 @@ function cycles(b) {
 }
 const draftsPerCycle = seen => Object.values(Object.groupBy(seen.filter(call => call.draft), call => call.cycle)).map(calls => calls.length)
 
-// 8b. The check-line rule fails at every check while the owner writes during it. The first
+// 8b. The 0.75 rule fails at every check while the owner writes during it. The first
 // draft is dropped as too large; no draft follows (the same summary does not fit the
 // span "compact" would draft either), so every checkpoint is a foreground one; as many
 // checkpoints go in as before drafts (4358f654: 4).
 test('a draft dropped as too large is not written again in the same cycle', async (t) => {
   const b = await boot(t)
   const seen = cycles(b)
-  b.env.checkpointText = 'S'.repeat(64_000)
+  b.env.checkpointText = 'S'.repeat(52_000)
   let busy = 0
   const push = b.env.calls.push.bind(b.env.calls)
   b.env.calls.push = (call) => {
@@ -453,7 +453,7 @@ test('a model whose window the checkpoint does not fit under drops it', async (t
   await grow(b)
   await settle(() => b.kinds('checkpoint').length === 1)
   await tick(30)
-  // 2,000 window: check 1,600; what stays after the checkpoint is over it.
+  // 2,000 window: check 1,600; what stays after the checkpoint is more than 0.75 of it.
   b.agent.model.select({ provider: P, model: 'tiny' })
   await b.say('on the tiny model')
   await b.quiet()
@@ -675,12 +675,12 @@ function calls(b) {
 }
 const summaries = b => b.types().filter(type => type === 'compaction/summary').length
 
-// Review 2 C1: a summary over the check line in every cycle. One draft is wasted, then
+// Review 2 C1: a summary over the 0.75 share in every cycle. One draft is wasted, then
 // every checkpoint is made with compactNow and no draft before it.
 test('drafts that never fit are paid for once, not in every cycle', async (t) => {
   const b = await boot(t)
   const seen = calls(b)
-  b.env.checkpointText = 'S'.repeat(56_000)
+  b.env.checkpointText = 'S'.repeat(52_000)
   for (let index = 1; index <= 60; index += 1) await b.say(`m${index}`)
   await tick(50)
   const made = summaries(b)
@@ -718,7 +718,9 @@ const requestSizes = (b) => {
 }
 
 // Review L1: a snapshot that keeps the part at about 80% of its check line after each
-// checkpoint. The steward is not asked again at the next turn after a checkpoint.
+// checkpoint. No checkpoint can fit under 0.75 x check, so the part makes one summary per
+// checkpoint, as before drafts, and not two; the steward is not asked again at the next
+// turn after a checkpoint.
 test('a large runtime context that comes back is not counted as freed', async (t) => {
   const b = await boot(t)
   const seen = calls(b)
@@ -879,7 +881,7 @@ async function floorCycles(t, { skills = 0, summary = 400, cycles = 6 } = {}) {
 // About 80% and 30% floors, with the skill catalog and with no node put back (a summary
 // of that size instead).
 const floorCases = [
-  ['the skill catalog, floor about 74%', { skills: 84 }],
+  ['the skill catalog, floor about 62% (the app at a 160,000 window)', { skills: 67 }],
   ['the skill catalog, floor about 80%', { skills: 90 }],
   ['the skill catalog, floor about 86%', { skills: 99 }],
   ['the skill catalog, floor about 97%', { skills: 113 }],
@@ -893,9 +895,10 @@ for (const [name, options] of floorCases) {
     assert.ok(requests <= cycles + 1, line)
     assert.ok(stewards <= cycles + 1, line)
     assert.equal(again, 0, line)
-    // Every checkpoint goes in in the background: the floor is under the check line.
-    assert.ok(floor < 100, line)
-    assert.equal(applied, made, line)
+    // Under 75% every checkpoint goes in in the background. At or above it none fits
+    // under 0.75 x check: one draft is dropped, then the idle condense runs once a cycle.
+    if (floor < 75) assert.equal(applied, made, line)
+    else assert.equal(applied, 0, line)
   })
 }
 
