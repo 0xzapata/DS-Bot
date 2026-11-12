@@ -1076,3 +1076,35 @@ test('a base just under the check line: the steward runs by the hard line, not p
   assert.ok(seen.filter(call => call[0] === 's').length <= summaries(b) + 1, order)
   assert.deepEqual(b.owner(), Array.from({ length: 24 }, (_, n) => `m${n + 1}`))
 })
+
+// Review 6 F3 (a3-big): owner message 3 overflows once, so the part moves on with the
+// latest messages, and the fresh part's opening answer ends at about 16,800 of 20,000.
+// Its base is its size at the opening turn's first request, so that turn's end asks the
+// steward; the part does not grow on to the window and move again with no note.
+test('a fresh part whose opening answer is large asks the steward at that turn\'s end', async (t) => {
+  const b = await boot(t)
+  const seen = calls(b)
+  const parts = freshParts(b, seen, { enforce: true })
+  const adapter = b.ctx.llm.adapters.get(P).adapter
+  const stream = adapter.stream.bind(adapter)
+  let fail = false
+  adapter.stream = (options) => {
+    if (!fail || isSteward(options) || isCheckpoint(options)) return stream(options)
+    fail = false
+    seen.push('X')
+    return (async function* () { yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'context window exceeded' } } } })()
+  }
+  for (let index = 1; index <= 10; index += 1) {
+    fail = index === 3
+    b.env.answerSize = index === 3 ? 62_000 : 2_000
+    await parts.say(`m${index}`)
+    seen.push('|')
+  }
+  await tick(100)
+  const order = seen.join(' ')
+  // Owner message 3: the overflow, the move, the opening turn, then the steward.
+  const opening = order.split('|')[2].trim().split(' ')
+  assert.deepEqual(opening.slice(0, 4), ['X', 'NEW', 't', 's0'], order)
+  assert.equal(parts.made(), 1, order)
+  assert.equal(seen.filter(call => call === 'X').length, 1, order)
+})
