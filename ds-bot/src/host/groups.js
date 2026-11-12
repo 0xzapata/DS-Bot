@@ -1118,7 +1118,8 @@ export function install(rt) {
         slots: speakers.map(member => ({
           id: member.id, name: member.name, status: 'waiting', batch: 1,
           ...(ordered ? { ordered: true } : {}),
-          ...(opened.hop !== undefined ? { hop: opened.hop } : {}),
+          // In an `auto` group the members a Bot's post calls by its rules reply one hop deeper.
+          ...(opened.hop !== undefined ? { hop: opened.hop } : room.mode === 'auto' && poster !== undefined && !event(opener) ? { hop: 2 } : {}),
           // A round a Bot's post opened: what its members answer is Bot-to-Bot, counted
           // by the idle guard even though no one is named (#853).
           ...(opener.botId !== undefined ? { fromBot: true } : {}),
@@ -1357,8 +1358,9 @@ export function install(rt) {
     const by = speakers.filter(peer => named.includes(peer))
     const rest = speakers.filter(peer => !named.includes(peer))
     const note = extra.done ? `${sender.name} finished the work you asked for` : undefined
-    callIn(round, by, note ?? `${sender.name} mentioned you`, sender.id, { ordered })
-    callIn(round, rest, note, undefined, { ordered })
+    const hop = room.mode === 'auto' && !extra.done ? 2 : undefined
+    callIn(round, by, note ?? `${sender.name} mentioned you`, sender.id, { ordered, hop })
+    callIn(round, rest, note, undefined, { ordered, hop })
     if (rt.isAdminOf(room, sender.id)) for (const peer of speakers) rt.goalTaskWorking?.(room.id, peer.id)
     if (extra.reportBack) {
       (round.reports ??= []).push({ post: { botId: sender.id, name: sender.name, reportBack: true, ...(extra.sub ? { sub: extra.sub } : {}), ...(extra.fromRoomId ? { fromRoomId: extra.fromRoomId } : {}) }, ids: opened.judge ? picked : speakers.map(peer => peer.id), from: round.replies.length })

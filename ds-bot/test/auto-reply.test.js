@@ -871,3 +871,29 @@ test('33. matrix: owner part x Bot part in auto; Bot rule calls come from the sa
   t.diagnostic(`matrix (owner | bot | result)\n${table.join('\n')}`)
 })
 
+// R4 F: a member a Bot's post calls by its rules replies at hop 2 (bar 0.7), so a 0.65
+// pick from its reply calls nobody: in the relay the post opens, and in a running round.
+test('34. GA3-8 a Bot post "@Coder" opens an auto relay; Coder calls nobody: Coder\'s reply is hop 2', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'Coder' ? { p: { Tester: 0.65 } } : { p: {} }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  await env.emit(room.id, postX(ids, 'Writer', '@Coder please list the merged code changes.', { mentions: { ids: [ids.Coder], all: false } }))
+  const { spoke } = await playRound(env, room.id, name => `${name} lists every merged change in detail.`)
+  assert.equal(env.audit().find(line => nameOf(env, line) === 'Coder')?.hop, 2)
+  assert.deepEqual(spoke, ['Coder'])
+})
+
+test('35. a Bot post "@Coder" into a running auto round (callPost); Coder calls nobody: Coder\'s reply is hop 2', async (t) => {
+  await fakeJev(t, body => (body.state.from === 'Coder' ? { p: { Tester: 0.65 } } : { p: {} }))
+  const env = start(t)
+  const { room, ids } = await team(env)
+  await env.emit(room.id, env.userMessage('@Writer hold the floor'))
+  let posted = false
+  const spoke = await drive(env, env.relay(room.id, 'relay'), name => `${name} lists every merged change in detail.`, async () => {
+    if (posted) return
+    posted = true
+    await env.rt.postToRoom(env.rt.roomOf(room.id), env.rt.botOf(ids.Chief), '@Coder please list the merged code changes.', { mentions: { ids: [ids.Coder], all: false } })
+  })
+  assert.equal(env.audit().find(line => nameOf(env, line) === 'Coder')?.hop, 2)
+  assert.deepEqual(spoke, ['Writer', 'Coder'])
+})
