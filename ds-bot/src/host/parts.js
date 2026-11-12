@@ -21,7 +21,7 @@ import { HANDOFF_ACK, HISTORY_TIMEOUT_MS, REPLY_KIND, SOURCE_KIND } from './cons
 import { parseReplies, stackReplies } from '../shared/group-replies.js'
 import { CHECKPOINT_PROMPT, STEWARD_SYSTEM, checkpointCount, checkpointTail, checkpointTailNote, checkpointText, linesFor, parseDecision, stewardRequest } from './steward.js'
 import { RESUME_DELAY_MS } from './resume.js'
-import { createDrafts, returning } from './draft.js'
+import { AFTER_SHARE, createDrafts, returning, seqsOf, sizeAfter } from './draft.js'
 import { clip, createClock, escapeRegExp, estimateTokens, splitRef, textOf } from './text.js'
 import { viaOf } from '../shared/im-platforms.js'
 import { checkShownView, normalizeView, readViewReply, viewCardText, viewReply, viewReplyText } from 'deep-view/core'
@@ -282,13 +282,14 @@ export function install(rt) {
     return id !== undefined && (rt.selfOf(id) !== undefined || rt.roomOf(id) !== undefined)
   }
   const ownedByBot = target => isBotTarget(target) && !condensing.has(target.session.id)
+  const sizeOfText = text => ctx.get('tokenMeter')?.estimateMessage({ role: 'user', content: [{ type: 'text', text }] }) ?? estimateTokens(text)
   // Background checkpoints (draft.js): a Bot's own chat only, on its own engine.
   const drafts = createDrafts({
     rt,
     write: writeCheckpoint,
     current: agent => ownChat(agent) && !switches.has(agent.id),
     measure: session => measureOf(session),
-    size: text => ctx.get('tokenMeter')?.estimateMessage({ role: 'user', content: [{ type: 'text', text }] }) ?? estimateTokens(text),
+    size: text => sizeOfText(text),
   })
   ctx.effect(() => () => drafts.dispose(), 'ds-bot: background checkpoints')
   // A Bot's current own chat, on an engine DS Bot condenses through. A local agent CLI
@@ -600,18 +601,18 @@ export function install(rt) {
     const written = await summaryThrough(session, route, { input, head, tail, prompt, maxTokens, signal })
     const place = placeOf(session.id)
     const lines = await contextLines(session).catch(() => undefined)
+    const fields = { number: checkpointCount(input.messages) + 1, summary: written?.summary ?? NO_SUMMARY }
+    // Read live: the list fits what keeps the part under the draft's share of the check
+    // line once the checkpoint is in (draft.js sizeAfter); the newest message always stays.
+    const seqs = seqsOf(session, input)
+    const fixed = seqs === undefined || lines === undefined ? 0 : sizeAfter(session, measureOf(session), seqs, sizeOfText(checkpointText({ ...fields, kept: [], more: false })))
     const { kept, more } = await keptMessages(session.id, {
-      budget: Math.min(RECENT_TOKENS, Math.floor((lines?.check ?? 4 * RECENT_TOKENS) / 4)),
+      budget: Math.min(RECENT_TOKENS, Math.floor((lines?.check ?? 4 * RECENT_TOKENS) / 4), lines === undefined ? Infinity : Math.max(0, Math.floor(AFTER_SHARE * lines.check - fixed))),
       group: place?.roomId !== undefined,
       number: place === undefined ? 1 : partsOf(place.botId, place.roomId).length,
       through,
     })
-    const text = checkpointText({
-      number: checkpointCount(input.messages) + 1,
-      summary: written?.summary ?? NO_SUMMARY,
-      kept,
-      more,
-    })
+    const text = checkpointText({ ...fields, kept, more })
     return {
       summary: [{ type: 'text', text }],
       rawOutput: written?.rawOutput ?? [{ type: 'text', text: NO_SUMMARY }],
@@ -1044,6 +1045,7 @@ export function install(rt) {
             await rt.save()
           }
           noteFailures.delete(agent.id)
+          turnStart.delete(agent.id)
           folderRetry.delete(agent.id)
           engineRetry.delete(agent.id)
           // The folder may have changed again while the switch ran.

@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util'
 // A checkpoint that leaves the part above this share of its check line is not used: the
 // part's next steward call (parts.js grown, a quarter of the check line past the base)
 // would come only past the check line.
-const AFTER_SHARE = 0.75
+export const AFTER_SHARE = 0.75
 // Draft requests per checkpoint cycle (from the part's start or its last checkpoint to
 // its next one). A draft that is dropped unused or whose apply fails spends the rest:
 // the part's next checkpoint is made the way it was before drafts.
@@ -53,6 +53,23 @@ export function spanOf(session) {
   return { seqs, generation: session.surface.replaceGeneration, input: summaryInput(session, seqs) }
 }
 
+// The surface nodes a summary input was built from (summaryInput above), or undefined
+// when the surface no longer gives that input.
+export function seqsOf(session, input) {
+  const nodes = session.surface?.nodes
+  if (nodes === undefined) return undefined
+  const seqs = nodes.slice(session.eventAt(nodes[0])?.type === 'system/message' ? 1 : 0, input.messages.length)
+  return seqs.length > 0 && isDeepStrictEqual(summaryInput(session, seqs), input) ? seqs : undefined
+}
+
+// The context size at the step after a checkpoint of `tokens` replaces `seqs`.
+export function sizeAfter(session, measured, seqs, tokens) {
+  const at = measured?.nodes?.findIndex(node => node.seq === seqs[0]) ?? -1
+  if (at === -1 || measured.totalTokens === undefined) return Infinity
+  const span = measured.nodes.slice(at, at + seqs.length).reduce((total, node) => total + node.tokens, 0)
+  return measured.totalTokens - span + returning(session, measured, seqs) + tokens
+}
+
 // `write(input, agent, signal, through)`: the checkpoint for `input`, whose span ends at
 // seq `through` (parts.js writeCheckpoint). `current(agent)`: the part is still its Bot's current own chat and
 // no switch runs. `measure(session)` prices the Session, `size(text)` one message.
@@ -78,13 +95,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
   }
 
   // The context size at the step after the checkpoint replaces the span.
-  function after(session, entry) {
-    const measured = measure(session)
-    const at = measured?.nodes?.findIndex(node => node.seq === entry.seqs[0]) ?? -1
-    if (at === -1 || measured.totalTokens === undefined) return Infinity
-    const span = measured.nodes.slice(at, at + entry.seqs.length).reduce((total, node) => total + node.tokens, 0)
-    return measured.totalTokens - span + returning(session, measured, entry.seqs) + size(entry.result.summary.map(block => block.text).join('\n'))
-  }
+  const after = (session, entry) => sizeAfter(session, measure(session), entry.seqs, size(entry.result.summary.map(block => block.text).join('\n')))
 
   // Whether the written draft still matches and fits under `lines`. One that does
   // not is dropped, and the part drafts no more this cycle.

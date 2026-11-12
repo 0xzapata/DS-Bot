@@ -34,7 +34,8 @@ const isSteward = options => typeof options.system === 'string' && options.syste
 
 // One Bot 'b' whose own chat is Session 'b', on the real loop. Every model call is
 // recorded. `env.steward` is the steward's answer; `env.gate` holds checkpoint calls
-// while set; `env.answerSize` sets the characters of each answer. `skills`: that many
+// while set; `env.answerSize` sets the characters of each answer, `env.echo` how much of
+// the owner's message it repeats (all by default). `skills`: that many
 // skills in the real skill tool's catalog (about 128 tokens each).
 async function boot(t, { bot: botFields = {}, local = false, readOnly, room = false, skills = 0, models = { m: WINDOW, big: 2 * WINDOW, tiny: 2_000 }, compaction = { auto: false } } = {}) {
   const ctx = new Context()
@@ -62,7 +63,7 @@ async function boot(t, { bot: botFields = {}, local = false, readOnly, room = fa
         text = env.checkpointText
       } else {
         const asked = (options.messages ?? []).filter(message => message.role === 'user' && message.source?.kind === 'user').map(textOf).at(-1) ?? ''
-        text = `answer to ${asked} ${'x'.repeat(env.answerSize)}`
+        text = `answer to ${asked.slice(0, env.echo)} ${'x'.repeat(env.answerSize)}`
       }
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text }
@@ -1216,4 +1217,88 @@ test('a failed model switch keeps the owner\'s message in the chat once', async 
   assert.equal(said.filter(text => text === 'lost').length, 1)
   assert.equal(said.filter(text => text === 'again').length, 1)
   assert.ok(textOf(b.events().findLast(event => event.type === 'assistant/message').data.message).startsWith('answer to again'))
+})
+
+// The app's numbers scaled to the test window (check 16,000): owner messages of 4,000
+// characters (about 1,000 tokens), each a part of the checkpoint's word-for-word list, on
+// a mock that refuses every request over the window (at most 20 refusals). `skills` sets
+// the fixed content, `answer` the characters of each answer. Returns the size after each
+// checkpoint and the moves to a fresh part.
+async function longTurns(t, { skills, answer, turns = 20, onEvent }) {
+  const b = await boot(t, { skills })
+  if (onEvent !== undefined) b.ctx.on('session/event', (session, event) => onEvent(event))
+  const seen = calls(b)
+  const parts = freshParts(b, seen)
+  const meter = b.ctx.tokenMeter
+  const over = []
+  const sizeOf = async (options) => {
+    if (isSteward(options)) return [{ role: 'system', content: [{ type: 'text', text: options.system }] }, ...options.messages].reduce((total, message) => total + meter.estimateMessage(message), 0)
+    const prompt = isCheckpoint(options) || textOf(options.messages?.at(-1)).startsWith('You are now writing a handoff note')
+    return meter.measure((await parts.current()).session).totalTokens + (prompt ? meter.estimateMessage(options.messages.at(-1)) : 0)
+  }
+  const failed = (async function* () { yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'context window exceeded' } } } })
+  const refuse = async (options, kind) => {
+    const size = await sizeOf(options)
+    if (size <= WINDOW) return false
+    over.push(`${kind}${size}`)
+    if (over.length > 20) throw new Error('20 refused requests')
+    return true
+  }
+  const adapter = b.ctx.llm.adapters.get(P).adapter
+  const inner = adapter.stream.bind(adapter)
+  adapter.stream = async function* (options) { yield* (await refuse(options, isSteward(options) ? 's' : isCheckpoint(options) ? 'c' : 't') ? failed() : inner(options)) }
+  const stream = b.ctx.llm.stream.bind(b.ctx.llm)
+  b.ctx.llm.stream = options => (textOf(options.messages?.at(-1)).startsWith('You are now writing a handoff note') ? (async function* () { yield* (await refuse(options, 'H') ? failed() : stream(options)) })() : stream(options))
+  const bases = []
+  const info = b.ctx.logger.info.bind(b.ctx.logger)
+  b.ctx.logger.info = (template, ...args) => {
+    const line = format(template, ...args)
+    const after = line.match(/(?:condensed from|applied its background checkpoint,) \d+ to (\d+) tokens/)
+    if (after !== null) bases.push(Number(after[1]))
+    return info(template, ...args)
+  }
+  b.env.echo = 12
+  b.env.answerSize = answer
+  const ownerTurns = []
+  for (let index = 1; index <= turns; index += 1) {
+    const before = bases.length
+    await parts.say(`m${index} ${'p'.repeat(4_000)}`)
+    if (bases.length > before) ownerTurns.push(index)
+  }
+  await tick(100)
+  const made = bases.length
+  const line = `skills ${skills} answer ${answer}: checkpoints ${made} at turns ${ownerTurns.join(',')} bases ${bases.join(',')} summary requests ${seen.filter(call => call[0] === 'c').length} steward ${seen.filter(call => call[0] === 's').length} moves ${parts.made()} over ${over.join(',')}: ${seen.join(' ')}`
+  console.log(line)
+  return { b, seen, bases, made, moves: parts.made(), over, line, ownerTurns }
+}
+
+for (const [share, answer] of [[12, 3_700], [8, 1_100]]) {
+  test(`fixed content at 88% of check, long owner messages, turns of about ${share}% of check: no move, the base does not rise`, async (t) => {
+    const { b, seen, bases, made, moves, over, line } = await longTurns(t, { skills: 105, answer })
+    assert.equal(moves, 0, line)
+    assert.deepEqual(over, [], line)
+    assert.ok(made >= 3, line)
+    for (const base of bases.slice(2)) assert.ok(base <= bases[1] * 1.02, line)
+    assert.ok(seen.filter(call => call[0] === 'c').length <= made + 1, line)
+    assert.ok(seen.filter(call => call[0] === 's').length <= made + 1, line)
+    const owner = b.owner().map(text => text.split(' ')[0])
+    assert.deepEqual(owner, Array.from({ length: 20 }, (_, n) => `m${n + 1}`), line)
+    const answered = b.events().filter(event => event.type === 'assistant/message').map(event => textOf(event.data.message ?? event.data).match(/^answer to (m\d+) /)?.[1]).filter(Boolean)
+    assert.deepEqual(answered, owner, line)
+  })
+}
+
+// A roomy window (fixed content about 34% of check): the word-for-word list is as long as
+// before the rule, with the same lines in each checkpoint.
+test('fixed content at 34% of check, long owner messages: the checkpoint list is as before', async (t) => {
+  const lists = []
+  const { b, moves, over, line } = await longTurns(t, { skills: 37, answer: 3_700, turns: 12, onEvent: (event) => {
+    const text = event.type === 'user/message' ? textOf(event.data.message ?? event.data) : ''
+    if (text.includes('[Checkpoint ')) lists.push(text.split('\n').filter(row => row.startsWith('[part ')).map(row => row.match(/\] User: (m\d+) /)?.[1]).join(','))
+  } })
+  // As at 1e0fb1a8: the list budget is a quarter of the check line, two messages here.
+  assert.deepEqual(lists, ['m5,m6', 'm10,m11'], line)
+  assert.equal(moves, 0, line)
+  assert.deepEqual(over, [], line)
+  assert.equal(b.owner().length, 12)
 })
