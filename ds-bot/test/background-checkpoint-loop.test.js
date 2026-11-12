@@ -352,8 +352,8 @@ const draftsPerCycle = seen => Object.values(Object.groupBy(seen.filter(call => 
 
 // 8b. The 0.75 rule fails at every check while the owner writes during it. The first
 // draft is dropped as too large; no draft follows (the same summary does not fit the
-// span "compact" would draft either), so every checkpoint is a foreground one; as many
-// checkpoints go in as before drafts (4358f654: 4).
+// span "compact" would draft either), so every checkpoint is a foreground one. 4358f654
+// made 4; the steward now runs one turn before the hard line, so the same turns make 5.
 test('a draft dropped as too large is not written again in the same cycle', async (t) => {
   const b = await boot(t)
   const seen = cycles(b)
@@ -371,9 +371,9 @@ test('a draft dropped as too large is not written again in the same cycle', asyn
   for (let index = 0; index < 6; index += 1) await b.say(`more${index}`)
   await b.quiet()
   await tick(80)
-  assert.equal(b.types().filter(type => type === 'compaction/summary').length, 4)
+  assert.equal(b.types().filter(type => type === 'compaction/summary').length, 5)
   assert.ok(draftsPerCycle(seen).every(count => count === 1), JSON.stringify(seen))
-  assert.equal(seen.length, 5, JSON.stringify(seen))
+  assert.equal(seen.length, 6, JSON.stringify(seen))
   assert.ok(b.balanced())
 })
 
@@ -1107,4 +1107,51 @@ test('a fresh part whose opening answer is large asks the steward at that turn\'
   assert.deepEqual(opening.slice(0, 4), ['X', 'NEW', 't', 's0'], order)
   assert.equal(parts.made(), 1, order)
   assert.equal(seen.filter(call => call === 'X').length, 1, order)
+})
+
+// Review 7 F1, scaled from the app (base 57,200 after each checkpoint, turns of 7,400,
+// window 80,000): 100 skills put the base at about 94% of the check line, and each owner
+// turn adds about 12% of it. A turn can end just under the hard line; the steward runs
+// then, as the next turn would end above it and its summary request (the chat and the
+// prompt) over the window. Every request is measured (turn, steward, summary, note), and
+// one over the window fails as a real route does.
+test('a base near the check line and large turns: the steward runs one turn before the hard line', async (t) => {
+  const b = await boot(t, { skills: 100 })
+  const seen = calls(b)
+  const parts = freshParts(b, seen, { enforce: true })
+  const meter = b.ctx.tokenMeter
+  const over = []
+  const sizeOf = (options) => {
+    if (isSteward(options)) return [{ role: 'system', content: [{ type: 'text', text: options.system }] }, ...options.messages].reduce((total, message) => total + meter.estimateMessage(message), 0)
+    // A summary or note request is the chat with its prompt last; a turn's is the chat.
+    const prompt = isCheckpoint(options) || textOf(options.messages?.at(-1)).startsWith('You are now writing a handoff note')
+    return meter.measure(b.agent.session).totalTokens + (prompt ? meter.estimateMessage(options.messages.at(-1)) : 0)
+  }
+  const refuse = (options, kind) => {
+    const size = sizeOf(options)
+    if (size <= WINDOW) return false
+    over.push(`${kind}${size}`)
+    // Refused requests can repeat without end; after 20 the test ends and fails.
+    return over.length <= 20
+  }
+  const failed = (async function* () { yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'context window exceeded' } } } })
+  const adapter = b.ctx.llm.adapters.get(P).adapter
+  const inner = adapter.stream.bind(adapter)
+  adapter.stream = options => (refuse(options, isSteward(options) ? 's' : isCheckpoint(options) ? 'c' : 't') ? failed() : inner(options))
+  const stream = b.ctx.llm.stream.bind(b.ctx.llm)
+  b.ctx.llm.stream = options => (textOf(options.messages?.at(-1)).startsWith('You are now writing a handoff note') && refuse(options, 'H') ? failed() : stream(options))
+  b.env.answerSize = 7_400
+  let index = 0
+  while (summaries(b) < 7 && index < 60) { index += 1; await parts.say(`m${index}`) }
+  await tick(100)
+  const order = `${seen.join(' ')} over ${over.join(',')}`
+  const made = summaries(b)
+  console.log(`large turns: checkpoints ${made} summary requests ${seen.filter(call => call[0] === 'c').length} steward ${seen.filter(call => call[0] === 's').length} moves ${parts.made()} over ${over.length}: ${order}`)
+  assert.ok(made >= 6, order)
+  assert.deepEqual(over, [], order)
+  assert.ok(!seen.includes('X'), order)
+  assert.equal(parts.made(), 0, order)
+  assert.ok(seen.filter(call => call[0] === 'c').length <= made + 1, order)
+  assert.ok(seen.filter(call => call[0] === 's').length <= made + 1, order)
+  assert.deepEqual(b.owner(), Array.from({ length: index }, (_, n) => `m${n + 1}`))
 })

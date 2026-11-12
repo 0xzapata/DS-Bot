@@ -880,6 +880,8 @@ export function install(rt) {
   // Parts whose note failed below the hard line: failures in a row, and the time
   // before which the check line does not try again.
   const noteFailures = new Map()
+  // Each part's size and base at its turn's first step.
+  const turnStart = new Map()
   // Parts the steward is deciding about at the end of a turn.
   const checking = new Set()
   // Turns cut off at the output limit with nothing written, in a row, per part.
@@ -908,9 +910,11 @@ export function install(rt) {
       : rt.roomOf(owner.roomId)?.sessions?.[owner.botId])
   // A base under the check line (a blocking checkpoint can leave it near it) lets the
   // steward run by the hard line at the latest; one at or above it waits a full quarter.
-  const grown = (sessionId, tokens, lines) => {
+  // `growth`, what the turn that just ended added, makes the steward run one turn before
+  // the next could pass the hard line.
+  const grown = (sessionId, tokens, lines, growth = 0) => {
     const base = partBase.get(sessionId) ?? 0
-    return tokens >= (base < lines.check ? Math.min(base + lines.check / 4, lines.hard) : base + lines.check / 4)
+    return tokens >= base + lines.check / 4 || (base < lines.check && tokens + Math.max(growth, 0) >= lines.hard)
   }
   // A read-only process (another dsh holds the team) neither condenses nor switches.
   const readOnly = () => rt.readOnly() !== undefined
@@ -1335,6 +1339,7 @@ export function install(rt) {
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next()
     const { agent, signal } = payload
+    if (payload.step === 1) turnStart.set(agent.id, { tokens: tokensOf(agent.session), base: partBase.get(agent.id) })
     if (decision.kind === 'reject' || signal?.aborted || !drafts.marked(agent.id)) return decision
     const lines = await contextLines(agent.session, agent.model.current()).catch(() => undefined)
     const entry = signal?.aborted || !ownChat(agent) || readOnly() || switches.has(agent.id) ? undefined : drafts.take(agent, lines)
@@ -1576,7 +1581,12 @@ export function install(rt) {
     const lines = await contextLines(agent.session)
     const tokens = tokensOf(agent.session)
     if (lines === undefined || tokens === undefined) return
-    if (tokens < lines.check || !grown(agent.id, tokens, lines)) return
+    // The base counts what DSH puts back at the step; a base set in the turn (a checkpoint,
+    // a fresh part's opening) is where it grew from.
+    const start = turnStart.get(agent.id)
+    const base = partBase.get(agent.id) ?? 0
+    const growth = start === undefined ? 0 : tokens - (start.base === partBase.get(agent.id) ? Math.max(start.tokens ?? 0, base) : base)
+    if (tokens < lines.check || !grown(agent.id, tokens, lines, growth)) return
     const hard = tokens >= lines.hard
     if (!hard && Date.now() < (noteFailures.get(agent.id)?.until ?? 0)) return
     checking.add(agent.id)
@@ -1589,7 +1599,7 @@ export function install(rt) {
           // Read live: the plugin may have stopped, the Bot gone or the part moved on, and
           // a turn that ran meanwhile may have made room already.
           const now = tokensOf(agent.session)
-          if (drafts.closed() || !ownChat(agent) || readOnly() || switches.has(agent.id) || now === undefined || now < lines.check || !grown(agent.id, now, lines)) return
+          if (drafts.closed() || !ownChat(agent) || readOnly() || switches.has(agent.id) || now === undefined || now < lines.check || !grown(agent.id, now, lines, growth)) return
         }
         const condensed = await condense(agent, lines, { inTurn: false })
         if (condensed !== false) return
