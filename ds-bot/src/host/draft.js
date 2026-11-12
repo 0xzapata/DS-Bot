@@ -52,8 +52,8 @@ export function spanOf(session) {
   return { seqs, generation: session.surface.replaceGeneration, input: summaryInput(session, seqs) }
 }
 
-// `write(input, agent, signal)`: the checkpoint for `input` (parts.js
-// writeCheckpoint). `current(agent)`: the part is still its Bot's current own chat and
+// `write(input, agent, signal, through)`: the checkpoint for `input`, whose span ends at
+// seq `through` (parts.js writeCheckpoint). `current(agent)`: the part is still its Bot's current own chat and
 // no switch runs. `measure(session)` prices the Session, `size(text)` one message.
 export function createDrafts({ rt, write, current, measure, size }) {
   /** @type {Map<string, {seqs:number[], generation:number, input:any, abort:AbortController, result?:any}>} */
@@ -111,7 +111,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
     const entry = { ...span, abort: new AbortController() }
     drafts.set(id, entry)
     try {
-      entry.result = await write(span.input, agent, AbortSignal.any([entry.abort.signal, AbortSignal.timeout(DRAFT_TIMEOUT_MS)]))
+      entry.result = await write(span.input, agent, AbortSignal.any([entry.abort.signal, AbortSignal.timeout(DRAFT_TIMEOUT_MS)]), span.seqs.at(-1))
     } catch (error) {
       if (drafts.get(id) !== entry) return false
       drafts.delete(id)

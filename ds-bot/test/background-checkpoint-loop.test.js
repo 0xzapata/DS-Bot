@@ -221,6 +221,29 @@ test('stage 1: the checkpoint is written in the background and applied at the ne
   assert.ok(b.tokens() < 16_000)
 })
 
+// Live check 3 #4: a message sent while the draft is written runs and is saved, after
+// the span the draft condenses. It stays as its own node after the checkpoint, so the
+// checkpoint's word-for-word list leaves it out; one sent before the draft is in it.
+test('a message sent during the draft is in the next request once, and not in the checkpoint list', async (t) => {
+  const b = await boot(t)
+  b.env.gateOn()
+  await grow(b)
+  await settle(() => b.kinds('checkpoint').length === 1)
+  await b.say('ZEBRA during the draft')
+  b.env.gateOff()
+  await tick(50)
+  await b.say('after the draft')
+  assert.equal(b.kinds('checkpoint').length, 1)
+  // The user side of the request: the checkpoint and the messages after it.
+  const sent = b.kinds('turn').at(-1).options.messages.filter(message => message.role === 'user').map(textOf)
+  assert.equal(sent.join('\n').split('ZEBRA during the draft').length - 1, 1, 'once in the request')
+  assert.ok(sent.includes('ZEBRA during the draft'), 'word for word, as its own message')
+  const checkpoint = sent.find(text => text.includes('User: m11'))
+  assert.ok(checkpoint !== undefined, 'a message from before the draft is kept')
+  assert.equal(checkpoint.includes('ZEBRA'), false)
+  assert.ok(b.balanced())
+})
+
 test('a message queued while the checkpoint applies goes on after it', async (t) => {
   const b = await boot(t)
   await grow(b)

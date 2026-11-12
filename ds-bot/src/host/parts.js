@@ -564,13 +564,14 @@ export function install(rt) {
 
   // The messages to the Bot in this part, newest kept first within the budget, as a
   // checkpoint carries them. Read from the saved record, so messages an earlier
-  // checkpoint condensed are there too.
-  async function keptMessages(sessionId, { budget, group, number }) {
+  // checkpoint condensed are there too. `through`: the last seq a background checkpoint
+  // condenses; a message saved after it stays on its own after the checkpoint.
+  async function keptMessages(sessionId, { budget, group, number, through = Infinity }) {
     const kept = []
     let used = 0
     let more = false
     for await (const line of partLines(sessionId, AbortSignal.timeout(HANDOFF_READ_MS), { group, pages: Infinity })) {
-      if (line.who === 'you') continue
+      if (line.who === 'you' || line.seq > through) continue
       const text = `${group ? `[${clock(line.time)}]` : `[part ${number} #${line.seq} · ${clock(line.time)}]`} ${clip(line.text, RECENT_LINE_MAX, 'read_own_chat shows all of it')}`
       const cost = estimateTokens(text)
       if (kept.length > 0 && used + cost > budget) {
@@ -586,7 +587,7 @@ export function install(rt) {
   // DS Bot's summary for a Bot Session, in place of the backend's. Like the backend's
   // own, it is one request on the conversation's own prefix, so the provider serves
   // that from cache.
-  async function writeCheckpoint(input, agent, signal) {
+  async function writeCheckpoint(input, agent, signal, through) {
     const session = agent.session
     const route = session.requestHeader()?.config
     if (!route?.provider || !route?.model) throw new Error('the Session has not called a model yet')
@@ -603,6 +604,7 @@ export function install(rt) {
       budget: Math.min(RECENT_TOKENS, Math.floor((lines?.check ?? 4 * RECENT_TOKENS) / 4)),
       group: place?.roomId !== undefined,
       number: place === undefined ? 1 : partsOf(place.botId, place.roomId).length,
+      through,
     })
     const text = checkpointText({
       number: checkpointCount(input.messages) + 1,
