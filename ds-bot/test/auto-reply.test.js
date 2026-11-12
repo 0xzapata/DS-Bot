@@ -868,8 +868,11 @@ test('33. matrix: owner part x Bot part in auto; Bot rule calls come from the sa
       assert.deepEqual(got.set, [...new Set([...owners[ownerPart], ...ruleCalls])].sort(), where)
       assert.equal(got.called.length, got.set.length, `each member once: ${where}`)
       // F: the owner part's members reply at hop 1; a member only a Bot's rules call
-      // replies at hop 2.
-      for (const turn of got.turns) assert.deepEqual([turn.who, turn.hop], [turn.who, owners[ownerPart].includes(turn.who) ? 1 : 2], where)
+      // replies at hop 2 and counts as Bot-to-Bot for the idle guard.
+      for (const turn of got.turns) {
+        const ruleOnly = !owners[ownerPart].includes(turn.who)
+        assert.deepEqual([turn.who, turn.hop, ruleOnly && turn.bot], [turn.who, ruleOnly ? 2 : 1, ruleOnly], where)
+      }
       assert.deepEqual(got.woken, rules?.woken ?? [], where)
       const ownerJudged = ['plain', 'two plain', 'plain (Coder)'].includes(ownerPart)
       assert.deepEqual(got.jev, ownerJudged ? ['user'] : [], where)
@@ -930,3 +933,14 @@ test('37. running auto round: while Coder speaks, the owner\'s message (Jev Code
   })
   assert.deepEqual([spoke, hops], [['Coder', 'Coder'], [1, 1]])
 })
+
+// GA4-5, GA4-6: a member a folded Bot post calls without naming it counts as Bot-to-Bot,
+// as when the post opens the relay alone.
+for (const botPart of ['Chief @all', 'Writer late askedBy Coder']) {
+  test(`38. owner plain + ${botPart} in one auto relay: the members only the Bot post calls count as Bot-to-Bot`, async (t) => {
+    const result = await cell(t, 'auto', 'plain', botPart)
+    const ruleOnly = result.turns.filter(turn => turn.who !== 'Writer')
+    assert.ok(ruleOnly.length > 0)
+    assert.deepEqual(ruleOnly.filter(turn => !turn.bot), [])
+  })
+}

@@ -1362,7 +1362,9 @@ export function install(rt) {
     const note = extra.done ? `${sender.name} finished the work you asked for` : undefined
     const hop = room.mode === 'auto' && !extra.done ? 2 : undefined
     callIn(round, by, note ?? `${sender.name} mentioned you`, sender.id, { ordered, hop })
-    callIn(round, rest, note, undefined, { ordered, hop })
+    // A post folded into an auto relay (`judge: false`) counts its unnamed callees as
+    // Bot-to-Bot, as the relay it opens alone would.
+    callIn(round, rest, note, undefined, { ordered, hop, fromBot: !judge })
     if (rt.isAdminOf(room, sender.id)) for (const peer of speakers) rt.goalTaskWorking?.(room.id, peer.id)
     if (extra.reportBack) {
       (round.reports ??= []).push({ post: { botId: sender.id, name: sender.name, reportBack: true, ...(extra.sub ? { sub: extra.sub } : {}), ...(extra.fromRoomId ? { fromRoomId: extra.fromRoomId } : {}) }, ids: opened.judge ? picked : speakers.map(peer => peer.id), from: round.replies.length })
