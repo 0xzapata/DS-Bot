@@ -243,7 +243,7 @@ export function install(rt) {
     // Images in the replaced history must use the same route pricing as the total.
     const history = measured?.nodes === undefined
       ? messages.filter(message => message.role !== 'system').reduce((total, message) => total + size(message), 0)
-      : measured.nodes.filter(node => session.eventAt(node.seq).type !== 'system/message').reduce((total, node) => total + node.tokens, 0)
+      : measured.nodes.filter(node => session.eventAt(node.seq).type !== 'system/message').reduce((total, node) => total + node.tokens, 0) - returning(session, measured, measured.nodes.map(node => node.seq))
     const pending = carry.reduce((total, message) => total + size(message), 0)
     const replacement = size({ role: 'user', content: [{ type: 'text', text }] }) + pending
     const tokens = measured?.totalTokens

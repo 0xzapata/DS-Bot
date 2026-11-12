@@ -953,9 +953,11 @@ test('a floor near the check line: no steward call on two turns in a row', async
 // Fixed content above the check line (128 skills, about 107%): a move cannot bring the
 // part under the line, so the fresh part's opening turn does not ask the steward and move
 // on again by itself. Every model call follows an owner message.
-test('a base above the check line: a fresh part does not move on again by itself', async (t) => {
-  const b = await boot(t, { skills: 128 })
-  const seen = calls(b)
+// Fresh parts on `b`: the move to a fresh part makes 'b-fresh<n>' (at most `cap`), and
+// the handoff note is written with no model call. `enforce`: a turn request over the
+// window fails with CONTEXT_WINDOW_EXCEEDED, as a real route does. Each turn is `t` in
+// `seen`, a failed one `X`.
+function freshParts(b, seen, { cap = 5, enforce = false } = {}) {
   Object.assign(b.rt, { ensureCapabilities: async () => {}, moveSchedules: async () => {}, keepTeamFolder: () => {}, own: () => true })
   const fresh = new Map()
   const isPart = id => id === 'b' || /^b-fresh/.test(id)
@@ -964,7 +966,7 @@ test('a base above the check line: a fresh part does not move on again by itself
   b.rt.resolveAgent = async id => (id === 'b' || id === undefined ? b.agent : fresh.get(id) ?? fresh.set(id, await b.ctx.agentLoop.create(SessionId(id), { provider: P, model: 'm' })).get(id))
   let made = 0
   b.rt.createSession = async () => {
-    if (made >= 5) throw new Error('5 fresh parts')
+    if (made >= cap) throw new Error(`${cap} fresh parts`)
     made += 1
     seen.push('NEW')
     b.rt.chatOwners.set(`b-fresh${made}`, 'b')
@@ -982,20 +984,41 @@ test('a base above the check line: a fresh part does not move on again by itself
       yield { type: 'finish', reason: { kind: 'stop' } }
     })()
   }
+  const adapter = b.ctx.llm.adapters.get(P).adapter
+  const inner = adapter.stream.bind(adapter)
+  adapter.stream = (options) => {
+    const session = options.sessionId === 'b' ? b.agent.session : fresh.get(options.sessionId)?.session
+    if (!enforce || isSteward(options) || isCheckpoint(options) || session === undefined || b.ctx.tokenMeter.measure(session).totalTokens <= WINDOW) return inner(options)
+    seen.push('X')
+    if (seen.filter(call => call === 'X').length > 60) throw new Error('60 failed requests')
+    return (async function* () { yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'context window exceeded' } } } })()
+  }
   const push = b.env.calls.push.bind(b.env.calls)
   b.env.calls.push = (call) => {
     if (call.kind === 'turn') seen.push('t')
     return push(call)
   }
-  b.env.answerSize = 2_000
-  for (let index = 1; index <= 8; index += 1) {
-    const agent = await b.rt.resolveAgent(b.bot.sessionId)
-    agent.followup(userMessage(`m${index}`))
+  const current = () => b.rt.resolveAgent(b.bot.sessionId)
+  const say = async (text) => {
+    const agent = await current()
+    agent.followup(userMessage(text))
     await settle(() => agent.status === 'idle' && !agent.inbox.hasPending)
     await tick(60)
-    const now = await b.rt.resolveAgent(b.bot.sessionId)
+    const now = await current()
     await settle(() => now.status === 'idle' && !now.inbox.hasPending)
   }
+  return { say, current, made: () => made }
+}
+
+// Fixed content above the check line (128 skills, about 107%): a move cannot bring the
+// part under the line, so the fresh part's opening turn does not ask the steward and move
+// on again by itself. Every model call follows an owner message.
+test('a base above the check line: a fresh part does not move on again by itself', async (t) => {
+  const b = await boot(t, { skills: 128 })
+  const seen = calls(b)
+  const parts = freshParts(b, seen)
+  b.env.answerSize = 2_000
+  for (let index = 1; index <= 8; index += 1) await parts.say(`m${index}`)
   await tick(100)
   const order = seen.join(' ')
   const perTurn = stewardsPerTurn(seen)
@@ -1003,4 +1026,23 @@ test('a base above the check line: a fresh part does not move on again by itself
   assert.ok(order.split(/\bt\b/).every(part => part.split(' ').filter(call => call === 'NEW').length <= 1), order)
   for (let n = 1; n < perTurn.length; n += 1) assert.ok(perTurn[n] <= 1 && (perTurn[n - 1] === 0 || perTurn[n] === 0), `steward on turns ${n} and ${n + 1}: ${order}`)
   assert.equal(b.env.warnings.length, 0, b.env.warnings.join('\n'))
+})
+
+// Fixed content above the window (150 skills) and a route that refuses a request over
+// it: what DSH puts back in a fresh part is not freed by the move, so an overflow does
+// not move on from one fresh part to the next.
+test('fixed content above the window: an overflow does not move on to fresh part after fresh part', async (t) => {
+  const b = await boot(t, { skills: 150 })
+  const seen = calls(b)
+  const parts = freshParts(b, seen, { cap: 40, enforce: true })
+  b.env.answerSize = 2_000
+  for (let index = 1; index <= 4; index += 1) {
+    await parts.say(`m${index}`)
+    seen.push('|')
+  }
+  await tick(100)
+  const order = seen.join(' ')
+  console.log(`window-150: fresh ${parts.made()} failed ${seen.filter(call => call === 'X').length}: ${order}`)
+  assert.ok(order.split('|').every(part => part.split(' ').filter(call => call === 'NEW').length <= 1), order)
+  assert.ok(seen.filter(call => call === 'X').length <= 4, order)
 })
