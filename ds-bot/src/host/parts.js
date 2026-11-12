@@ -1562,7 +1562,8 @@ export function install(rt) {
     // From the draft line on, after a turn that ended well, a Bot's own chat writes its
     // checkpoint ahead, so it is ready when the steward is asked at the check line.
     if (tokens < lines.check) {
-      if (tokens >= draftLine(lines.check, partBase.get(agent.id)) && lastTurnEnd(agent)?.data?.reason?.kind === 'completed' && ownChat(agent)) drafts.start(agent, { early: true })
+      // Above half the check line the base leaves no room: an early draft ends over 0.75 x check and is dropped.
+      if (tokens >= draftLine(lines.check, partBase.get(agent.id)) && (partBase.get(agent.id) ?? 0) <= lines.check / 2 && lastTurnEnd(agent)?.data?.reason?.kind === 'completed' && ownChat(agent)) drafts.start(agent, { early: true })
       return
     }
     if (!grown(agent.id, tokens, lines)) return

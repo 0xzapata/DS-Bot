@@ -725,18 +725,20 @@ test('drafts that never fit are paid for once, not in every cycle', async (t) =>
   assert.ok(b.balanced())
 })
 
-// Review 2 C2, 6,000-character answers: every draft fits and every cycle uses its early
-// draft, as at 81fcdbe2 (7 calls, 6 checkpoints).
-test('drafts that fit: the early draft is used in every cycle', async (t) => {
+// Review 2 C2, 6,000-character answers: every draft fits; 6 calls for 6 checkpoints. Cycle 0
+// uses an early draft; later ones have the base over half the check line and draft at "compact".
+test('drafts that fit: one draft per checkpoint, early when the base is under half the check line', async (t) => {
   const b = await boot(t)
   const seen = calls(b)
   for (let index = 1; index <= 50; index += 1) await b.say(`m${index}`)
   await tick(50)
   const checkpoints = seen.filter(call => call[0] === 'c')
   assert.equal(summaries(b), 6)
-  assert.deepEqual(checkpoints, ['cD0', 'cD1', 'cD2', 'cD3', 'cD4', 'cD5', 'cD6'])
-  // Each early: written before its cycle's steward call.
-  for (let n = 0; n < 6; n += 1) assert.ok(seen.indexOf(`cD${n}`) < seen.indexOf(`s${n}`), seen.join(' '))
+  assert.deepEqual(checkpoints, ['cD0', 'cD1', 'cD2', 'cD3', 'cD4', 'cD5'])
+  // Cycle 0 and every second cycle after it: the early draft, before the steward call.
+  // The cycles between have the base over half the check line: no early draft, and the
+  // draft is written at "compact", after the steward call.
+  assert.equal(seen.join(' '), 'cD0 s0 s1 cD1 cD2 s2 s3 cD3 cD4 s4 s5 cD5')
 })
 
 // 28,000-character answers: the early draft is too large, the steward's draft is not.
@@ -838,4 +840,47 @@ test('after one summary too large, background checkpoints come back', async (t) 
   assert.ok(later.filter(call => call.startsWith('cD')).length >= 3, seen.join(' '))
   assert.ok(seen.filter(call => call[0] === 'c').length <= summaries(b) + 2, seen.join(' '))
   assert.ok(b.balanced())
+})
+
+// Review 4 I3: runtime-context snapshots that put the floor (the size right after a
+// checkpoint) at about 30%, 60% and 72% of the check line. Above 50% an early draft can
+// never fit, so none is started; below it early drafts still run.
+async function floorRun(t, words, cycles = 8) {
+  const b = await boot(t)
+  const seen = calls(b)
+  let applied = 0
+  const info = b.ctx.logger.info.bind(b.ctx.logger)
+  b.ctx.logger.info = (template, ...args) => {
+    if (String(template).includes('applied its background checkpoint')) applied += 1
+    return info(template, ...args)
+  }
+  b.env.answerSize = 2_000
+  b.ctx.systemPrompt.context({ name: 'zz-ctx', order: 10, required: true, interpolate: false, text: 'zz-ctx '.repeat(words) })
+  let index = 0
+  while (summaries(b) < cycles && index < 200) { index += 1; await b.say(`m${index}`) }
+  await tick(50)
+  const made = summaries(b)
+  const drafts = seen.filter(call => call.startsWith('cD')).length
+  const blocking = seen.filter(call => call.startsWith('cF')).length
+  assert.equal(made, cycles)
+  assert.ok(b.balanced())
+  console.log(`floor ${words}: calls ${drafts + blocking} checkpoints ${made} background ${applied} blocking ${blocking}: ${seen.join(' ')}`)
+  return { seen, made, drafts, blocking, applied }
+}
+for (const [words, pct] of [[4700, 60], [5910, 72]]) {
+  test(`floor at about ${pct}% of check: no wasted early drafts, at most one blocking checkpoint`, async (t) => {
+    const { seen, made, drafts, blocking } = await floorRun(t, words)
+    assert.ok(drafts + blocking <= made + 1, `calls ${drafts + blocking}: ${seen.join(' ')}`)
+    assert.ok(blocking <= 1, seen.join(' '))
+  })
+}
+test('floor at about 30% of check: early drafts still start, every draft is applied, none blocks', async (t) => {
+  const { seen, made, drafts, blocking, applied } = await floorRun(t, 1_600)
+  assert.equal(blocking, 0, seen.join(' '))
+  assert.equal(applied, made, seen.join(' '))
+  assert.ok(drafts <= made, seen.join(' '))
+  // An early draft is one written before its cycle's steward call; the gate leaves the
+  // ones whose base is under half the check line (here cycle 0 and every second cycle).
+  const early = Array.from({ length: made }, (_, n) => n).filter(n => seen.indexOf(`cD${n}`) < seen.indexOf(`s${n}`))
+  assert.ok(early.length >= 3, seen.join(' '))
 })
