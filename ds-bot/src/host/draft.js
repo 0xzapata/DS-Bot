@@ -9,8 +9,10 @@ import { isDeepStrictEqual } from 'node:util'
 // A checkpoint that leaves the part above this share of its check line is not used:
 // another cycle would start at once.
 export const AFTER_SHARE = 0.75
-// Failed drafts in a row before a part stops drafting, until its next checkpoint.
-const FAILURES_MAX = 2
+// Draft requests per checkpoint cycle (from the part's start or its last checkpoint to
+// its next one). A draft that is dropped unused or whose apply fails spends the rest:
+// the part's next checkpoint is made the way it was before drafts.
+const REQUESTS_MAX = 2
 const DRAFT_TIMEOUT_MS = 600_000
 
 // What the backend's summary hook will be given for a span: the system head on surface
@@ -41,10 +43,7 @@ export function spanOf(session) {
 export function createDrafts({ rt, write, current, measure, size }) {
   /** @type {Map<string, {seqs:number[], generation:number, input:any, marked:boolean, abort:AbortController, done:Promise<boolean>, result?:any}>} */
   const drafts = new Map()
-  const failures = new Map()
-  // Parts whose draft went stale before a step: their next checkpoint is made the way it
-  // was before drafts, once.
-  const stale = new Set()
+  const requests = new Map()
   // The draft whose summary the hook hands over during an apply, per Session.
   const applying = new Map()
   let closed = false
@@ -57,9 +56,10 @@ export function createDrafts({ rt, write, current, measure, size }) {
       held.marked ||= marked
       return held
     }
-    if (closed || (failures.get(id) ?? 0) >= FAILURES_MAX) return undefined
+    if (closed || (requests.get(id) ?? 0) >= REQUESTS_MAX) return undefined
     const span = spanOf(agent.session)
     if (span === undefined) return undefined
+    requests.set(id, (requests.get(id) ?? 0) + 1)
     const entry = { ...span, marked, abort: new AbortController() }
     drafts.set(id, entry)
     entry.done = (async () => {
@@ -76,8 +76,7 @@ export function createDrafts({ rt, write, current, measure, size }) {
       } catch (error) {
         if (drafts.get(id) !== entry) return false
         drafts.delete(id)
-        failures.set(id, (failures.get(id) ?? 0) + 1)
-        rt.warn('ds-bot: background checkpoint for %s failed (%d in a row): %s', id, failures.get(id), error?.message ?? error)
+        rt.warn('ds-bot: background checkpoint for %s failed: %s', id, error?.message ?? error)
         return false
       }
     })()
@@ -103,30 +102,29 @@ export function createDrafts({ rt, write, current, measure, size }) {
     return measured.totalTokens - span + size(entry.result.summary.map(block => block.text).join('\n'))
   }
 
-  // A held draft that fits under `lines` and still matches; dropped otherwise.
+  // A held draft that fits under `lines` and still matches; dropped otherwise, and the
+  // part drafts no more this cycle.
   function usable(agent, entry, lines) {
     const fits = lines !== undefined && matches(agent.session, entry) && after(agent.session, entry) <= AFTER_SHARE * lines.check
-    if (!fits) drop(agent.id)
+    if (!fits) {
+      drop(agent.id)
+      requests.set(agent.id, REQUESTS_MAX)
+    }
     return fits
   }
 
   // The steward said "compact": the part's draft, started now if none runs, is marked for
   // the next step. True once it is ready and usable under `lines`.
   async function compact(agent, lines) {
-    if (stale.delete(agent.id)) return false
     const entry = start(agent, { marked: true })
     if (entry === undefined || !await entry.done || drafts.get(agent.id) !== entry) return false
     return usable(agent, entry, lines)
   }
 
-  // Whether the marked draft still fits under `lines`; one that does not is dropped, and
-  // the part's next checkpoint is made the way it was before drafts.
+  // Whether the marked draft still fits under `lines`; one that does not is dropped.
   function fits(agent, lines) {
     const entry = drafts.get(agent.id)
-    if (entry?.result === undefined || !entry.marked) return false
-    if (usable(agent, entry, lines)) return true
-    stale.add(agent.id)
-    return false
+    return entry?.result !== undefined && entry.marked && usable(agent, entry, lines)
   }
 
   // Takes the marked draft for this step, synchronously checked under `lines`: once taken
@@ -143,8 +141,11 @@ export function createDrafts({ rt, write, current, measure, size }) {
     applying.set(agent.id, entry)
     try {
       const result = await region(entry.seqs[0], entry.seqs.at(-1))
-      failures.delete(agent.id)
+      requests.delete(agent.id)
       return result
+    } catch (error) {
+      requests.set(agent.id, REQUESTS_MAX)
+      throw error
     } finally {
       applying.delete(agent.id)
     }
@@ -163,6 +164,8 @@ export function createDrafts({ rt, write, current, measure, size }) {
     const entry = drafts.get(sessionId)
     if (entry === undefined) return
     drafts.delete(sessionId)
+    // A request cut off unfinished (a switch, /new, a stopped Session) is not spent.
+    if (entry.result === undefined) requests.set(sessionId, (requests.get(sessionId) ?? 1) - 1)
     entry.abort.abort(new Error('the background checkpoint was dropped'))
   }
 
@@ -177,8 +180,8 @@ export function createDrafts({ rt, write, current, measure, size }) {
     drop,
     held: sessionId => drafts.has(sessionId),
     marked: sessionId => drafts.get(sessionId)?.marked === true,
-    // A checkpoint made another way counts as a success too.
-    succeeded: sessionId => failures.delete(sessionId),
+    // A new cycle: a checkpoint made another way, or a part that becomes current again.
+    succeeded: sessionId => requests.delete(sessionId),
     closed: () => closed,
     dispose() {
       closed = true

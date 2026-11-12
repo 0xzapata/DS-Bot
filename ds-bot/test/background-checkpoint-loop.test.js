@@ -302,6 +302,93 @@ test('a checkpoint that leaves the part too large is not used', async (t) => {
   assert.ok(b.balanced())
 })
 
+// Every checkpoint call, with its cycle (the checkpoints already in the Session) and
+// whether it is a draft: written outside a compaction bracket.
+function cycles(b) {
+  const seen = []
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    if (call.kind === 'checkpoint') {
+      const types = b.types()
+      const open = types.filter(type => type === 'compaction/start').length > types.filter(type => type === 'compaction/end').length
+      seen.push({ cycle: types.filter(type => type === 'compaction/summary').length, draft: !open })
+    }
+    return push(call)
+  }
+  return seen
+}
+const draftsPerCycle = seen => Object.values(Object.groupBy(seen.filter(call => call.draft), call => call.cycle)).map(calls => calls.length)
+
+// 8b. The 0.75 rule fails at every check while the owner writes during it. Every draft
+// is dropped as too large, so each cycle makes one draft request, then the foreground
+// checkpoint; as many checkpoints go in as before drafts (4358f654: 4).
+test('a draft dropped as too large is not written again in the same cycle', async (t) => {
+  const b = await boot(t)
+  const seen = cycles(b)
+  b.env.checkpointText = 'S'.repeat(52_000)
+  let busy = 0
+  const push = b.env.calls.push.bind(b.env.calls)
+  b.env.calls.push = (call) => {
+    if (call.kind === 'steward' && busy < 6) {
+      busy += 1
+      queueMicrotask(() => b.agent.followup(userMessage(`busy${busy}`)))
+    }
+    return push(call)
+  }
+  await grow(b)
+  for (let index = 0; index < 6; index += 1) await b.say(`more${index}`)
+  await b.quiet()
+  await tick(80)
+  assert.equal(b.types().filter(type => type === 'compaction/summary').length, 4)
+  assert.ok(draftsPerCycle(seen).every(count => count === 1), JSON.stringify(seen))
+  assert.equal(seen.length, 8, JSON.stringify(seen))
+  assert.ok(b.balanced())
+})
+
+// 8c. The engine turns the apply down: the part's next checkpoint is made with compactNow,
+// once, and no new draft starts at the idle checks after it.
+test('a refused apply: the next checkpoint is made the way it was before drafts, and no draft starts again', async (t) => {
+  const b = await boot(t)
+  const seen = cycles(b)
+  await grow(b)
+  await settle(() => b.kinds('checkpoint').length === 1)
+  await tick(30)
+  const engine = b.ctx.get('compaction')
+  const compactRegion = engine.compactRegion
+  const compactNow = engine.compactNow
+  let refused = 0
+  let nows = 0
+  engine.compactRegion = function () { refused += 1; return Promise.reject(new Error('refused')) }
+  engine.compactNow = function (...args) { nows += 1; return compactNow.apply(this, args) }
+  t.after(() => { engine.compactRegion = compactRegion; engine.compactNow = compactNow })
+  // The step goes on without it; the idle check at the end of the turn condenses in the
+  // foreground (the turn is still past the check line), with no new draft first.
+  await b.say('refused')
+  assert.equal(refused, 1)
+  assert.equal(nows, 1)
+  assert.deepEqual(seen, [{ cycle: 0, draft: true }, { cycle: 0, draft: false }])
+  // Five idle checks after it, below the draft line: nothing more is written.
+  b.env.answerSize = 100
+  for (let index = 0; index < 5; index += 1) await b.say(`idle${index}`)
+  await tick(50)
+  assert.equal(nows, 1)
+  assert.equal(seen.length, 2, JSON.stringify(seen))
+  assert.equal(b.types().filter(type => type === 'compaction/summary').length, 1)
+  assert.ok(b.balanced())
+})
+
+// 8d. A draft cut off by /new is not a failure: the new part drafts as any part does.
+test('a draft aborted by /new does not count against the next one', async (t) => {
+  const b = await boot(t, { bot: { segments: [{ sessionId: 'old', endedAt: 1 }] } })
+  b.env.gateOn()
+  await grow(b)
+  await settle(() => b.kinds('checkpoint').length === 1)
+  await b.rt.newSession('b').catch(() => {})
+  assert.equal(b.kinds('checkpoint')[0].options.signal.aborted, true)
+  b.env.gateOff()
+  assert.equal(b.env.warnings.some(line => /background checkpoint for b failed/.test(line)), false)
+})
+
 // 9. A failed draft: the same check falls back to the idle condense, as before (the
 // count of failures in a row is in the unit test below).
 test('failed drafts fall back to the idle condense', async (t) => {

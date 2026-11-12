@@ -87,3 +87,32 @@ test('after two failed drafts in a row no third starts, until a checkpoint succe
   assert.equal(await drafts.compact(agent, { check: 4_000 }), true)
   assert.equal(writes, 3)
 })
+
+test('a draft dropped while it runs is not spent; one dropped unused or a refused apply spends the cycle', async () => {
+  let writes = 0
+  const drafts = createDrafts({
+    rt: { warn() {} },
+    write: async (_input, _agent, signal) => {
+      writes += 1
+      await new Promise((resolve, reject) => { if (writes > 3) resolve(); signal.addEventListener('abort', () => reject(signal.reason), { once: true }) })
+      return { summary: [{ type: 'text', text: 's' }] }
+    },
+    current: () => true,
+    measure: () => ({ totalTokens: 1_000, nodes: [0, 1, 2].map(seq => ({ seq, tokens: 300 })) }),
+    size: estimateTokens,
+  })
+  const events = [{ type: 'user/message', data: {} }, { type: 'assistant/message', data: {} }, { type: 'assistant/message', data: {} }]
+  const agent = { id: 'b', session: { surface: { nodes: [0, 1, 2], replaceGeneration: 0 }, eventAt: seq => events[seq], deriveEventMessage: () => ({}), requestHeader: () => undefined } }
+  for (let index = 0; index < 3; index += 1) {
+    assert.ok(drafts.start(agent), `start ${index}`)
+    drafts.drop('b')
+  }
+  // Too large for these lines: dropped unused, and no other draft this cycle.
+  assert.equal(await drafts.compact(agent, { check: 100 }), false)
+  assert.equal(drafts.start(agent), undefined)
+  drafts.succeeded('b')
+  assert.equal(await drafts.compact(agent, { check: 4_000 }), true)
+  await assert.rejects(drafts.apply(agent, drafts.take(agent, { check: 4_000 }), async () => { throw new Error('refused') }))
+  assert.equal(drafts.start(agent), undefined, 'a refused apply spends the cycle')
+  assert.equal(writes, 5)
+})

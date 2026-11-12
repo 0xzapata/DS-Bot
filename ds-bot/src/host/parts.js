@@ -1899,6 +1899,7 @@ export function install(rt) {
     if (live?.turn !== undefined) throw Object.assign(new Error('The Bot is working; wait for it to finish or stop it first'), { code: 'bot/busy' })
     if (subagentOut(current)) refuse(SUBAGENT_OUT, 'bot/busy')
     drafts.drop(current)
+    drafts.succeeded(partId)
     // DSH turns away every step of an archived Session and every task aimed at it, so
     // the part leaves the archive before it becomes current.
     await ctx.workspaceRegistry.unarchiveSession(partId)
