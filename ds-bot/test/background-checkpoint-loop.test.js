@@ -1155,3 +1155,31 @@ test('a base near the check line and large turns: the steward runs one turn befo
   assert.ok(seen.filter(call => call[0] === 's').length <= made + 1, order)
   assert.deepEqual(b.owner(), Array.from({ length: index }, (_, n) => `m${n + 1}`))
 })
+
+// Review 7 F3: a side request for a fresh part (memory review, a side question, an image
+// read: its Session id, no purpose) at the part's opening step comes before the turn's own
+// first request. Only the agent loop's request sets the base, so it counts the prompt and
+// the catalog (128 skills, above the check line), and the part does not move on again.
+test('a side request at a fresh part\'s opening does not set its base', async (t) => {
+  const b = await boot(t, { skills: 128 })
+  const seen = calls(b)
+  const parts = freshParts(b, seen)
+  b.env.answerSize = 2_000
+  let side = false
+  b.ctx.on('agent/pre-step', async (payload, next) => {
+    if (!side && payload.agent.id.startsWith('b-fresh')) {
+      side = true
+      await Array.fromAsync(b.ctx.llm.stream({ provider: P, model: 'm', sessionId: payload.agent.id, messages: [userMessage('side question')] }))
+    }
+    return next()
+  })
+  for (let index = 1; index <= 8; index += 1) await parts.say(`m${index}`)
+  await tick(100)
+  const order = seen.join(' ')
+  assert.ok(side, order)
+  // As with no side request: one steward call, two summary requests, one note, one move.
+  assert.equal(seen.filter(call => call[0] === 's').length, 1, order)
+  assert.equal(seen.filter(call => call[0] === 'c').length, 2, order)
+  assert.equal(seen.filter(call => call === 'H').length, 1, order)
+  assert.equal(parts.made(), 1, order)
+})

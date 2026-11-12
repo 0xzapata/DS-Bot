@@ -15,7 +15,7 @@
 // word, and where the rest is. Input that arrives meanwhile waits and moves along.
 // read_own_chat searches every part, the condensed messages included.
 import { randomUUID } from 'node:crypto'
-import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import { openTurnAt } from './btw.js'
 import { HANDOFF_ACK, HISTORY_TIMEOUT_MS, REPLY_KIND, SOURCE_KIND } from './constants.js'
 import { parseReplies, stackReplies } from '../shared/group-replies.js'
@@ -1664,7 +1664,9 @@ export function install(rt) {
   // in the part's history. When nothing is left to do, that turn's reply is a fixed
   // line instead of a model call.
   ctx.on('llm/stream', (options, next) => {
-    const session = options.purpose === undefined ? opening.get(options.sessionId) : undefined
+    // Only the agent loop's own request: a side request (memory review, a side question)
+    // can come before the prompt and skill catalog are in.
+    const session = options.purpose === undefined && isAgentLoopRequest(options) ? opening.get(options.sessionId) : undefined
     if (session !== undefined && opening.delete(options.sessionId)) partBase.set(options.sessionId, tokensOf(session) ?? 0)
     if (options.sessionId === undefined || options.purpose !== undefined || rt.ownRequest(options)) return next()
     const messages = options.messages ?? []
