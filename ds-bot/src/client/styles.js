@@ -1028,6 +1028,11 @@ body[data-ds-dark-theme] .bt-theme-chip i{background:var(--da)}
 `
 
 export const CONVERSATION_CSS = `
+.bt-program{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin:2px 0;max-width:calc(var(--bt-msg-w) * 100%);font-size:12px;line-height:16px;color:var(--bt-ink-2)}
+.bt-program-toggle{border:0;background:none;color:inherit;font:inherit;padding:4px 6px;margin-left:-6px;border-radius:6px;cursor:pointer}
+.bt-program-toggle:hover{background:var(--bt-hover)}
+.bt-program-toggle:focus-visible{outline:2px solid var(--bt-accent);outline-offset:1px}
+.bt-program-code{align-self:stretch;margin:0;padding:8px 10px;border-radius:8px;background:var(--bt-hover);font:11px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--bt-ink);white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
 .bt-think{font-size:13px;line-height:18px;color:var(--bt-ink-2);margin:2px 0 4px;max-width:calc(var(--bt-msg-w) * 100%)}
 body[data-bt-layout=flat] .bt-think{max-width:calc(var(--bt-flat-w) * 100%)}
 .bt-think summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px}

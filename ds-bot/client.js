@@ -775,6 +775,14 @@ var ZH = {
   "A key is set.": "已设置密钥。",
   "No key yet. You can also set TYPESAFE_API_KEY.": "还没有密钥。也可以设置环境变量 TYPESAFE_API_KEY。",
   Auto: "自动",
+  "Code mode": "代码模式",
+  "In its own chat, the Bot runs short programs that call its tools. Turning it on or off starts a new part.": "在自己的聊天中，Bot 运行调用其工具的短程序。开启或关闭都会开始新的一段。",
+  "Not for a private Bot.": "私密 Bot 不能使用。",
+  "Not with Full access. Choose another permission first.": "“完全权限”下不可用。请先选择其他权限。",
+  "Not without the shell tool.": "没有 shell 工具时不可用。",
+  "Not for a Bot on a local agent.": "运行在本地智能体上的 Bot 不能使用。",
+  "Show program": "显示程序",
+  "Hide program": "隐藏程序",
   "Auto · {model}": "自动 · {model}",
   "Turn on quick judgments in Settings > General first.": "请先在 设置 > 通用 中开启快速判断。",
   'Write a "when to use it" note for two or more models in Settings > Usage.': "请在 设置 > 用量 中为至少两个模型写下“何时使用”说明。",
@@ -4184,6 +4192,11 @@ body[data-ds-dark-theme] .bt-theme-chip i{background:var(--da)}
 }
 `;
 var CONVERSATION_CSS = `
+.bt-program{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin:2px 0;max-width:calc(var(--bt-msg-w) * 100%);font-size:12px;line-height:16px;color:var(--bt-ink-2)}
+.bt-program-toggle{border:0;background:none;color:inherit;font:inherit;padding:4px 6px;margin-left:-6px;border-radius:6px;cursor:pointer}
+.bt-program-toggle:hover{background:var(--bt-hover)}
+.bt-program-toggle:focus-visible{outline:2px solid var(--bt-accent);outline-offset:1px}
+.bt-program-code{align-self:stretch;margin:0;padding:8px 10px;border-radius:8px;background:var(--bt-hover);font:11px/16px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--bt-ink);white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
 .bt-think{font-size:13px;line-height:18px;color:var(--bt-ink-2);margin:2px 0 4px;max-width:calc(var(--bt-msg-w) * 100%)}
 body[data-bt-layout=flat] .bt-think{max-width:calc(var(--bt-flat-w) * 100%)}
 .bt-think summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px}
@@ -11772,6 +11785,13 @@ function MemoryDialog({ owner, actions, leaving = false }) {
 // src/client/bot-settings.js
 var import_react26 = require("react");
 var capitalize = (word) => word[0].toUpperCase() + word.slice(1);
+var CODE_MODE_HINT = "In its own chat, the Bot runs short programs that call its tools. Turning it on or off starts a new part.";
+var CODE_MODE_BLOCKS = {
+  "private": "Not for a private Bot.",
+  "full-access": "Not with Full access. Choose another permission first.",
+  "no-shell": "Not without the shell tool.",
+  "local": "Not for a Bot on a local agent."
+};
 function InlineText({ label, value, placeholder, required = false, maxLength, multiline = false, onSave }) {
   const [draft, setDraft] = (0, import_react26.useState)(null);
   const reverting = (0, import_react26.useRef)(false);
@@ -12056,7 +12076,14 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         { className: "bt-set-row bt-bs-row" },
         (0, import_react26.createElement)("span", { className: "bt-set-copy" }, (0, import_react26.createElement)("span", { className: "bt-bs-label" }, t("Model")), (0, import_react26.createElement)("span", { className: "bt-set-hint" }, modelHint(bot, roster))),
         (0, import_react26.createElement)(ModelMenu, { bot, roster, actions, run: run2 })
-      )
+      ),
+      (0, import_react26.createElement)(SwitchRow, {
+        label: t("Code mode"),
+        hint: bot.codeModeBlock !== void 0 && bot.codeMode !== true ? t(CODE_MODE_BLOCKS[bot.codeModeBlock] ?? CODE_MODE_HINT) : t(CODE_MODE_HINT),
+        on: bot.codeMode === true,
+        disabled: bot.codeMode !== true && bot.codeModeBlock !== void 0,
+        onChange: (codeMode) => save({ codeMode })
+      })
     ),
     (0, import_react26.createElement)(
       Card2,
@@ -15060,6 +15087,20 @@ function renderCall(call2, { sessionId, roster, actions, useUi, useWork, findBot
       return (0, import_react32.createElement)(CellEmpty);
   }
 }
+function ProgramFold({ code, title }) {
+  const [open, setOpen] = (0, import_react32.useState)(false);
+  return (0, import_react32.createElement)(
+    "div",
+    { className: "bt-program" },
+    (0, import_react32.createElement)(
+      "button",
+      { type: "button", className: "bt-program-toggle", "aria-expanded": open, onClick: () => setOpen((value) => !value) },
+      open ? t("Hide program") : t("Show program"),
+      title ? (0, import_react32.createElement)("span", { className: "bt-program-title" }, ` · ${title}`) : null
+    ),
+    open ? (0, import_react32.createElement)("pre", { className: "bt-program-code" }, (0, import_react32.createElement)("code", null, code)) : null
+  );
+}
 function ToolCell({ node, sessionId, useRoster, useUi, useWork, useHeldCards, useBrowserHolds, useBrowserTabs, useBrowserPages, useComputer, actions }) {
   const roster = useRoster((value) => value);
   const heldCards = useHeldCards?.((state) => state[sessionId]);
@@ -15073,9 +15114,15 @@ function ToolCell({ node, sessionId, useRoster, useUi, useWork, useHeldCards, us
   const note = running ? toolActivity(toolName(running), toolArgs(running).text, findBot, roster.byId[sessionId]) : null;
   useLiveNote(actions, sessionId, `tool:${root.callId ?? node.key}`, note);
   useShownCards(actions, sessionId, drawn.filter((call2) => (CARDS.has(toolName(call2)) || isComputerCall(toolName(call2))) && call2.callId).map((call2) => call2.callId));
-  if (drawn.length === 0) return (0, import_react32.createElement)(CellEmpty);
+  const program = !hidden && toolName(root) === "run_code" && roster.byId[sessionId] !== void 0 ? toolArgs(root).text("code") : void 0;
+  if (drawn.length === 0 && !program) return (0, import_react32.createElement)(CellEmpty);
   const env = { sessionId, roster, actions, useUi, useWork, findBot, heldCards, hooks: { useBrowserHolds, useBrowserTabs, useBrowserPages, useComputer } };
-  return (0, import_react32.createElement)(import_react32.Fragment, null, drawn.map((call2, index) => (0, import_react32.createElement)(import_react32.Fragment, { key: call2.callId ?? index }, renderCall(call2, env))));
+  return (0, import_react32.createElement)(
+    import_react32.Fragment,
+    null,
+    program ? (0, import_react32.createElement)(ProgramFold, { code: program, title: toolArgs(root).text("description") }) : null,
+    drawn.map((call2, index) => (0, import_react32.createElement)(import_react32.Fragment, { key: call2.callId ?? index }, renderCall(call2, env)))
+  );
 }
 
 // src/client/activity-row.js
@@ -25840,6 +25887,7 @@ function ApprovalCard({ approval, bot, actions }) {
     approval.detail?.text ? (0, import_react58.createElement)("div", { className: "bt-mw-text" }, approval.detail.text) : null,
     approval.reason ? (0, import_react58.createElement)("div", { className: "bt-mw-reason" }, approval.reason) : null,
     approval.detail?.code ? (0, import_react58.createElement)("code", { className: "bt-mw-code", title: approval.detail.code }, approval.detail.code) : null,
+    approval.detail?.program ? (0, import_react58.createElement)(ProgramFold, { code: approval.detail.program }) : null,
     // Own-chat approvals are answerable for IM and the phone app; here the Bot's
     // own DSH card stays the place to answer, so the row still opens that chat.
     approval.answerable && approval.roomId !== void 0 ? (0, import_react58.createElement)(

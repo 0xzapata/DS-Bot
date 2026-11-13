@@ -1,6 +1,6 @@
 import { createElement as h, useLayoutEffect, useRef, useState } from 'react'
 import { BotMark, toolState } from './mark.js'
-import { Elapsed, Shimmer, workPhrase } from './cells.js'
+import { Elapsed, ProgramFold, Shimmer, workPhrase } from './cells.js'
 import { SPRING_SHAPE, SPRING_TAP, spring, useLinger } from './motion.js'
 import { t } from './i18n.js'
 
@@ -142,6 +142,7 @@ function ApprovalCard({ approval, bot, actions }) {
     approval.detail?.text ? h('div', { className: 'bt-mw-text' }, approval.detail.text) : null,
     approval.reason ? h('div', { className: 'bt-mw-reason' }, approval.reason) : null,
     approval.detail?.code ? h('code', { className: 'bt-mw-code', title: approval.detail.code }, approval.detail.code) : null,
+    approval.detail?.program ? h(ProgramFold, { code: approval.detail.program }) : null,
     // Own-chat approvals are answerable for IM and the phone app; here the Bot's
     // own DSH card stays the place to answer, so the row still opens that chat.
     approval.answerable && approval.roomId !== undefined

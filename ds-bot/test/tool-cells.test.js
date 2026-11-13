@@ -325,6 +325,26 @@ test('each sub-call shows its own state, not its program\'s', () => {
   assert.match(shown(program([refused, posted])), /Couldn't post in the group.*Posted in.*Ops/)
 })
 
+test('a program a Bot ran in its own chat shows folded behind a real button; a group program does not', () => {
+  const code = 'const bots = await tools.list_bots({})\nconsole.log(bots)'
+  const root = program([call('bash', 'program:ptc:1')], { args: { description: 'List the team', code } })
+  const out = show(root)
+  const toggle = find(out, node => node.type === 'button' && node.props?.className === 'bt-program-toggle')
+  assert.ok(toggle !== undefined)
+  assert.equal(toggle.props.type, 'button')
+  assert.equal(toggle.props['aria-expanded'], false)
+  assert.match(text(toggle), /^Show program · List the team$/)
+  // Folded: the code is not drawn until the button opens it.
+  assert.equal(text(out).includes('list_bots'), false)
+  const before = sets.length
+  toggle.props.onClick()
+  assert.equal(sets.length, before + 1)
+  assert.equal(sets.at(-1)(false), true)
+  // A group's own Session is not a Bot's chat: it shows no program.
+  assert.ok(emptied(ToolCell(props(root, { sessionId: 'room' }))))
+  effects = []
+})
+
 test('a program with no known sub-call draws nothing, as before', () => {
   assert.ok(emptied(ToolCell(props(program([])))))
   assert.ok(emptied(ToolCell(props(program([call('bash', 'program:ptc:1'), call('read_file', 'program:ptc:2')])))))

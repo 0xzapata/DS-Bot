@@ -17,6 +17,16 @@ import { t } from './i18n.js'
 
 const capitalize = word => word[0].toUpperCase() + word.slice(1)
 
+// Code mode: in its own chat the Bot calls its tools from short programs. Why the
+// switch is off limits, by the reason the host names (roster.js codeModeBlock).
+const CODE_MODE_HINT = 'In its own chat, the Bot runs short programs that call its tools. Turning it on or off starts a new part.'
+const CODE_MODE_BLOCKS = {
+  'private': 'Not for a private Bot.',
+  'full-access': 'Not with Full access. Choose another permission first.',
+  'no-shell': 'Not without the shell tool.',
+  'local': 'Not for a Bot on a local agent.',
+}
+
 // Settings save on blur or Enter, with no Save button; Escape puts the
 // saved value back. A required field never saves empty.
 export function InlineText({ label, value, placeholder, required = false, maxLength, multiline = false, onSave }) {
@@ -215,7 +225,14 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
     h(Card, { title: t('Model') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Model')), h('span', { className: 'bt-set-hint' }, modelHint(bot, roster))),
-        h(ModelMenu, { bot, roster, actions, run }))),
+        h(ModelMenu, { bot, roster, actions, run })),
+      h(SwitchRow, {
+        label: t('Code mode'),
+        hint: bot.codeModeBlock !== undefined && bot.codeMode !== true ? t(CODE_MODE_BLOCKS[bot.codeModeBlock] ?? CODE_MODE_HINT) : t(CODE_MODE_HINT),
+        on: bot.codeMode === true,
+        disabled: bot.codeMode !== true && bot.codeModeBlock !== undefined,
+        onChange: codeMode => save({ codeMode }),
+      })),
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Folder'))),

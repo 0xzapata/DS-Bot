@@ -1195,6 +1195,15 @@ function renderCall(call, { sessionId, roster, actions, useUi, useWork, findBot,
   }
 }
 
+// A program a Bot ran, folded: a real button opens the code.
+export function ProgramFold({ code, title }) {
+  const [open, setOpen] = useState(false)
+  return h('div', { className: 'bt-program' },
+    h('button', { type: 'button', className: 'bt-program-toggle', 'aria-expanded': open, onClick: () => setOpen(value => !value) },
+      open ? t('Hide program') : t('Show program'), title ? h('span', { className: 'bt-program-title' }, ` · ${title}`) : null),
+    open ? h('pre', { className: 'bt-program-code' }, h('code', null, code)) : null)
+}
+
 export function ToolCell({ node, sessionId, useRoster, useUi, useWork, useHeldCards, useBrowserHolds, useBrowserTabs, useBrowserPages, useComputer, actions }) {
   const roster = useRoster(value => value)
   const heldCards = useHeldCards?.(state => state[sessionId])
@@ -1210,7 +1219,11 @@ export function ToolCell({ node, sessionId, useRoster, useUi, useWork, useHeldCa
   // A running tool shows only as the activity row's phrase.
   useLiveNote(actions, sessionId, `tool:${root.callId ?? node.key}`, note)
   useShownCards(actions, sessionId, drawn.filter(call => (CARDS.has(toolName(call)) || isComputerCall(toolName(call))) && call.callId).map(call => call.callId))
-  if (drawn.length === 0) return h(CellEmpty)
+  // In a Bot's own chat (code mode) the owner can read every program the Bot ran.
+  const program = !hidden && toolName(root) === 'run_code' && roster.byId[sessionId] !== undefined ? toolArgs(root).text('code') : undefined
+  if (drawn.length === 0 && !program) return h(CellEmpty)
   const env = { sessionId, roster, actions, useUi, useWork, findBot, heldCards, hooks: { useBrowserHolds, useBrowserTabs, useBrowserPages, useComputer } }
-  return h(Fragment, null, drawn.map((call, index) => h(Fragment, { key: call.callId ?? index }, renderCall(call, env))))
+  return h(Fragment, null,
+    program ? h(ProgramFold, { code: program, title: toolArgs(root).text('description') }) : null,
+    drawn.map((call, index) => h(Fragment, { key: call.callId ?? index }, renderCall(call, env))))
 }
