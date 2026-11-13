@@ -1151,6 +1151,12 @@ export function install(rt) {
   // Bot whose code preset this DSH lacks stays on standard (roster.js botPreset).
   async function codeMoved(agent, place) {
     const bot = place?.roomId === undefined ? rt.botOf(place?.botId) : undefined
+    // Full access set in the chat (DSH's /permission) or by DSH's default for a fresh
+    // part turns code mode off, as the Bot's settings do (roster.js updateBot).
+    if (bot?.codeMode === true && rt.codeModeBlock(bot, agent) === 'full-access') {
+      delete bot.codeMode
+      await rt.save()
+    }
     const presets = ctx.get?.('agentPresets')
     const current = bot === undefined || agent.ctx === undefined ? undefined : presets?.composedPreset?.(agent.ctx)
     if (current === undefined || (current === CODE_PRESET) === (bot.codeMode === true)) return false

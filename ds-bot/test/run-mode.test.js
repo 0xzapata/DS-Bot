@@ -108,6 +108,12 @@ async function start(t, { saved = team(), presets = ['standard', 'bot-code'] } =
     services: {
       agentPresets: { list: async () => presets.map(id => ({ id })), composedPreset: agentCtx => composed.get(agentCtx.id) ?? 'standard', serviceFor: () => undefined },
       sandboxPolicy: { resolve: ({ session }) => ({ mode: modes.get(session.id) ?? 'workspace-write' }) },
+      // A preset here is named by its sandbox mode; setting one writes that mode.
+      permissionPresets: {
+        catalog: () => ({ options: [{ value: 'workspace-write' }, { value: 'danger-full-access' }], defaultPreset: 'workspace-write' }),
+        resolve: name => ({ sandbox: name }),
+        set: (session, name) => modes.set(session.id, name),
+      },
       agents: { get: id => agents.get(id), turnBoundaryOf: session => ({ openTurnStartSeq: turnStart.get(session.id) ?? null }) },
     },
   })
@@ -920,6 +926,35 @@ test('making a Bot private turns its code mode off', async (t) => {
   env.rt.checkPrivacyChange = async () => {}
   env.composed.set('b', 'bot-code')
   assert.equal((await env.call('update-bot', { id: 'b', private: true })).ok, true)
+  assert.equal(env.state().bots.b.codeMode, undefined)
+  await until(() => env.created.length === 1, 'the fresh part on standard')
+  assert.equal(env.created[0].agentPreset, 'standard')
+})
+
+test('Full access set in the Bot\'s settings turns code mode off and moves the chat back to standard', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  env.composed.set('b', 'bot-code')
+  assert.equal((await env.call('update-bot', { id: 'b', permission: 'danger-full-access' })).ok, true)
+  assert.equal(env.state().bots.b.codeMode, undefined)
+  await until(() => env.created.length === 1, 'the fresh part on standard')
+  assert.equal(env.created[0].agentPreset, 'standard')
+  const fresh = env.state().bots.b.sessionId
+  assert.notEqual(fresh, 'b')
+  // The fresh part keeps Full access; its direct tools pass DS Bot's guards.
+  assert.equal(env.modes.get(fresh), 'danger-full-access')
+  assert.equal(guard(env, fresh, 'bash'), undefined)
+  // The switch shows why it cannot go back on.
+  assert.equal(env.rt.codeModeBlock(env.rt.botOf('b')), 'full-access')
+  const refused = await env.call('update-bot', { id: 'b', codeMode: true })
+  assert.match(refused.error.message, /Writer works with Full access/)
+})
+
+test('Full access set in the chat itself turns code mode off at the next step', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  env.composed.set('b', 'bot-code')
+  // DSH's own /permission command, or its default for a fresh part.
+  env.modes.set('b', 'danger-full-access')
+  await env.preStep('b', [], 1)
   assert.equal(env.state().bots.b.codeMode, undefined)
   await until(() => env.created.length === 1, 'the fresh part on standard')
   assert.equal(env.created[0].agentPreset, 'standard')

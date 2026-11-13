@@ -518,14 +518,16 @@ export function install(rt) {
       modelChanged = true
     }
     if (patch.permission !== undefined) await rt.setPermission(bot, patch.permission)
+    const fullNow = patch.permission !== undefined && bot.codeMode === true && codeModeBlock(bot, await rt.resolveAgent(rt.chatOf(id))) === 'full-access'
     if (browserGrants !== undefined) {
       if (browserGrants === null) delete bot.browserGrants
       else bot.browserGrants = browserGrants
     }
     if (codeOn) bot.codeMode = true
     else if (codeChanged) delete bot.codeMode
-    // A private Bot or one on a local agent cannot keep code mode; its chat moves back.
-    if (bot.codeMode === true && (flag === true || (engineChanged && rt.isLocalAgentRef?.(modelRef) === true))) {
+    // A private Bot, one on a local agent or one with Full access cannot keep code mode;
+    // its chat moves back. Full access set in the chat itself: parts.js codeMoved.
+    if (bot.codeMode === true && (flag === true || fullNow || (engineChanged && rt.isLocalAgentRef?.(modelRef) === true))) {
       delete bot.codeMode
       codeOff = true
     }
