@@ -9,7 +9,8 @@ import { unquote } from './text.js'
 const FILE_TOOLS = { read: 'file_path', write: 'file_path', edit: 'file_path', read_image: 'file_path', str_replace_editor: 'path' }
 const WRITE_TOOLS = ['write', 'edit', 'str_replace_editor']
 const SEARCH_TOOLS = ['glob', 'grep']
-const SHELL_TOOLS = ['bash', 'pwsh', 'terminal_open', 'terminal_send']
+// A run_code program (code mode) is read like shell text: it can reach files as a shell can.
+const SHELL_TOOLS = ['bash', 'pwsh', 'terminal_open', 'terminal_send', 'run_code']
 const SESSION_TOOLS = ['session_search', 'session_event_search', 'session_trace', 'session_event_trace', 'session_event_read']
 
 // Windows and macOS file systems ignore case.

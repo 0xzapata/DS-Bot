@@ -39,7 +39,8 @@ async function boot(t, program) {
     bots: {
       chief: { id: 'chief', sessionId: 'chief', name: 'Chief', role: 'Lead', instructions: '', createdAt: 1 },
       w: { id: 'w', sessionId: 'w', name: 'Writer', role: 'Writes', instructions: '', createdAt: 2, codeMode: true },
-      v: { id: 'v', sessionId: 'v', name: 'Vault', role: 'Keeps', instructions: '', createdAt: 3, private: true, workDir: vault },
+      // A Session id as DSH makes them: the privacy text check looks for it in a program.
+      'session-5f0c2a7e': { id: 'session-5f0c2a7e', sessionId: 'session-5f0c2a7e', name: 'Vault', role: 'Keeps', instructions: '', createdAt: 3, private: true, workDir: vault },
     },
   }))
   const ctx = new Context()
@@ -125,9 +126,16 @@ test('a hidden tool cannot be called from a program', async (t) => {
 })
 
 test('the privacy check refuses a program\'s read of a private Bot\'s folder', async (t) => {
-  const env = await boot(t, vault => `try { await tools.read({ file_path: ${JSON.stringify(join(vault, 'notes.md'))} }) } catch (error) { console.log("refused:", error.message) }`)
+  // The path is put together at run time, so the program text does not name it: the
+  // check on the read call itself refuses it.
+  const env = await boot(t, vault => `const path = ${JSON.stringify([...join(vault, 'notes.md')])}.join(''); try { await tools.read({ file_path: path }) } catch (error) { console.log("refused:", error.message) }`)
   assert.match(await env.run(), /refused: Vault is a private Bot, and other Bots cannot reach its files/)
   assert.deepEqual(env.ran, [])
+})
+
+test('a program that names a private Bot\'s folder is refused as a shell command is', async (t) => {
+  const env = await boot(t, vault => `const { readFile } = await import('node:fs/promises'); console.log(await readFile(${JSON.stringify(join(vault, 'notes.md'))}, 'utf8'))`)
+  assert.match(await env.run(), /Vault is a private Bot, and other Bots cannot reach its files/)
 })
 
 test('run_code is refused in a turn another Bot started', async (t) => {
