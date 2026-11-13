@@ -27,7 +27,7 @@ const textOf = message => (message?.content ?? []).map(block => block.text ?? ''
 // folder of its own. `program` is the code the model's first step runs, or a function of
 // Vault's folder that returns it; a list is one program per step. `beforeStep(n, agent)`
 // runs as step n's request starts.
-async function boot(t, program, { beforeStep } = {}) {
+async function boot(t, program, { beforeStep, shell = true } = {}) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-code-loop-')))
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }))
   const home = join(root, 'home')
@@ -76,6 +76,8 @@ async function boot(t, program, { beforeStep } = {}) {
   // A global tool DS Bot hides from Bots, and a file tool the privacy check reads.
   const ran = []
   ctx.tools.register(defineTool({ name: 'ask_user_question', description: 'Ask and wait', parameters: {}, output, async execute() { ran.push('ask_user_question'); return 'asked' } }))
+  // Code mode is for a Bot that has a shell; this one runs nothing.
+  if (shell) ctx.tools.register(defineTool({ name: 'bash', description: 'Run a command', parameters: { command: { type: 'string', required: true } }, output, async execute() { ran.push('bash'); return 'ran' } }))
   ctx.tools.register(defineTool({ name: 'read', description: 'Read a file', parameters: { file_path: { type: 'string', required: true } }, output, async execute(args) { ran.push(`read ${args.file_path}`); return 'contents' } }))
   // The plugin's own context, with the DSH services the Session side does not run here.
   const plugin = ctx.extend()
@@ -169,4 +171,13 @@ test('a second message of the owner steered into the turn does not refuse', asyn
   const env = await boot(t, ['console.log("FIRST")', 'console.log("SECOND")', 'console.log("THIRD")'], { beforeStep: steerAt2({ kind: 'user' }) })
   await env.run()
   assert.match(env.results()[2], /THIRD/)
+})
+
+// The reviewer's case C: with no bash served any more, a program could still start a
+// process, which the Bot's own tools no longer allow.
+test('run_code is refused when the Bot no longer has a shell', async (t) => {
+  const env = await boot(t, 'const cp = await import("node:child_process"); console.log("SPAWN", cp.execFileSync("/bin/echo", ["spawned"]).toString().trim())', { shell: false })
+  const result = await env.run()
+  assert.match(result, /Writer has no shell tool \(bash\) now/)
+  assert.doesNotMatch(result, /SPAWN/)
 })

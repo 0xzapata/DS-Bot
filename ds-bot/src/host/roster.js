@@ -130,6 +130,9 @@ export function install(rt) {
     if (bot === undefined) return undefined
     if (bot.private === true) return `Refused by DS Bot: ${bot.name} is private, and a private Bot does not run programs. Call your tools one at a time instead, or ask the user to turn code mode off.`
     if (fullAccess(exec.agent)) return 'Refused by DS Bot: this chat works with Full access, where a program would run with no sandbox. Ask the user to choose another permission.'
+    // A program can start processes; with no shell served any more, that is more than
+    // the Bot's own tools give. In a bot-code Session bash is still served to programs.
+    if (!serves(exec.agent, 'bash')) return `Refused by DS Bot: ${bot.name} has no shell tool (bash) now, so a program would let it do more than it can. Call your tools one at a time instead, or ask the user to turn code mode off.`
     if (!ownerOnly(exec.agent)) return 'Refused by DS Bot: in code mode a program runs only in a turn the user\'s own message started, and only while no message from another Bot, a routine or DS Bot has come into it. Say what you need in your reply, and the user can ask you to go on.'
     return undefined
   }), 'ds-bot: code mode')
