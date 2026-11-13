@@ -860,6 +860,8 @@ export function install(rt) {
     handoff: true,
     ...(resume ? { resume: true } : {}),
     ...(resume && job.joined?.length ? { joined: job.joined } : {}),
+    // Set, never copied from the trigger: whether the turn was the owner's alone at the move.
+    ownerTurn: resume && job.ownerTurn === true,
   })
 
   /** @type {Map<string, {botId:string, roomId?:string, carry:any[], info?:any, joined?:any[], resume:boolean, overflow:boolean, cutoff?:boolean, failed?:string, bare?:boolean, folder?:boolean, engine?:boolean, hard:boolean, started?:boolean, moved?:boolean, noteFailed?:boolean}>} */
@@ -1028,7 +1030,9 @@ export function install(rt) {
   function startSwitch(agent, { resume = false, carry = [], info, joined, overflow = false, failed, bare = false, folder = false, manual = false, clean = false, cutoff = false, engine = false, code = false, hard = overflow || folder || manual || clean || engine || cutoff } = {}) {
     const place = placeOf(agent.id)
     if (place === undefined || switches.has(agent.id) || readOnly() || subagentOut(agent.id)) return undefined
-    const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, code, hard, manual, clean, cutoff, since: Date.now() }
+    // Whether the turn that moves on was the owner's alone so far (roster.js ownerOnly).
+    const ownerTurn = resume && rt.ownerOnly?.(agent) === true
+    const job = { ...place, carry: [...carry], info, joined, resume, ownerTurn, overflow, failed, bare, folder, engine, code, hard, manual, clean, cutoff, since: Date.now() }
     switches.set(agent.id, job)
     drafts.drop(agent.id)
     // Settles with the job once the switch is over, moved or not; never rejects.
@@ -1065,7 +1069,8 @@ export function install(rt) {
           const carried = job.joined?.length ? { joined: job.joined } : {}
           back.unshift(createUserMessage({
             content: [{ type: 'text', text: PAUSE_NOTE }],
-            source: job.info ? { ...job.info, ...carried } : { kind: SOURCE_KIND, form: 'relay', role: 'resume', exchangeId: randomUUID(), senderName: 'DS Bot', ...carried },
+            // `pause` keeps a copied Retry source from reading as a new Retry (roster.js ownerOnly).
+            source: job.info ? { ...job.info, ...carried, pause: true, ownerTurn: job.ownerTurn === true } : { kind: SOURCE_KIND, form: 'relay', role: 'resume', exchangeId: randomUUID(), senderName: 'DS Bot', ...carried },
           }))
         }
         await forward(job, back).then(() => {

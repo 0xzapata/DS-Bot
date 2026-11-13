@@ -2,7 +2,7 @@
 // the first Main Bot of a new team.
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
-import { MAX_AVATAR_IMAGE, REPLY_KIND, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX, SECTION_COLORS, SECTION_NAME_MAX } from './constants.js'
+import { MAX_AVATAR_IMAGE, REPLY_KIND, ROOM_MAX_MEMBERS, SOURCE_KIND, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX, SECTION_COLORS, SECTION_NAME_MAX } from './constants.js'
 import { currentColor, isColor, normalize, unquote } from './text.js'
 import { nameProblem } from '../shared/mentions.js'
 
@@ -116,7 +116,12 @@ export function install(rt) {
   // skill catalog, and the package that opens a fresh part.
   const CONTEXT_FORMS = new Set(['snapshot', 'instructions', 'catalog'])
   const isContext = source => CONTEXT_FORMS.has(source?.form) || (source?.handoff === true && source.resume !== true)
+  // The owner's too: the repair card's Retry (turns.js resumeBot, only from the owner's
+  // click), and a turn that was the owner's alone when it moved on to a fresh part or
+  // paused (parts.js handoffSource, PAUSE_NOTE). Only DS Bot's own code writes a source.
   const isOwners = source => source?.kind === 'user' || source?.kind === REPLY_KIND
+    || (source?.kind === SOURCE_KIND && source.role === 'continue' && source.senderSessionId === undefined && source.handoff !== true && source.pause !== true)
+    || ((source?.handoff === true || source?.pause === true) && source.ownerTurn === true)
   function ownerOnly(agent) {
     const start = ctx.get?.('agents')?.turnBoundaryOf?.(agent.session)?.openTurnStartSeq
     if (start === null || start === undefined) return false
@@ -1032,7 +1037,7 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
-    ensureWorkspace, keepTeamFolder, createSession, codeModeBlock, createBot, duplicateBot, updateBot, setFlags,
+    ensureWorkspace, keepTeamFolder, createSession, codeModeBlock, ownerOnly, createBot, duplicateBot, updateBot, setFlags,
     saveSection, reorderSections, deleteSection,
     roomBusy, autoRoomName, retitleRoom, createRoom, updateRoom, deleteRoom,
     setMain, deleteBot, bootstrap, releaseKickoff, greetingOut, holdKickoffAgain, userWrote, userAnswered,

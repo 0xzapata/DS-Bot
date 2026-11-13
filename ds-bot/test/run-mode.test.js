@@ -921,6 +921,49 @@ test('the guard refuses run_code once any message in the turn is not the owner\'
   assert.match(guard(env, 'b'), /no message from another Bot, a routine or DS Bot has come into it/)
 })
 
+test('the repair card\'s Retry counts as the owner\'s; a resume after a restart and a routine do not', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  const retry = { kind: 'bot', form: 'relay', role: 'continue', exchangeId: 'r1', senderName: 'You' }
+  opened(env, 'b', retry)
+  assert.equal(guard(env, 'b'), undefined)
+  // Only DS Bot's Retry makes it: one with a sender or a handoff copy is not that.
+  // A pause or a move copies the Retry's source: it counts only as the move found the turn.
+  opened(env, 'b', { ...retry, pause: true, ownerTurn: true })
+  assert.equal(guard(env, 'b'), undefined)
+  for (const source of [{ ...retry, senderSessionId: 'a' }, { ...retry, handoff: true, resume: true, ownerTurn: false }, { ...retry, pause: true, ownerTurn: false }, { kind: 'bot', form: 'relay', role: 'resume', resumed: true, exchangeId: 'r2', senderName: 'DS Bot' }, { kind: 'schedule' }]) {
+    opened(env, 'b', source)
+    assert.match(guard(env, 'b'), /runs only in a turn the user's own message started/, JSON.stringify(source))
+  }
+})
+
+test('a turn the owner started goes on as the owner\'s in a fresh part; another one does not', async (t) => {
+  for (const [source, owners] of [[{ kind: 'user' }, true], [{ kind: 'bot', form: 'relay', role: 'request', senderSessionId: 'a', exchangeId: 'x1' }, false]]) {
+    const env = await start(t, { saved: withBot({ codeMode: true }) })
+    // The chat is on standard, so the next step moves it to bot-code mid-turn.
+    opened(env, 'b', source)
+    await env.preStep('b', [], 2)
+    await until(() => env.created.length === 1, 'the fresh part')
+    const fresh = env.state().bots.b.sessionId
+    await until(() => env.agentOf(fresh).calls.length > 0, 'the handoff package')
+    const handoff = env.agentOf(fresh).calls.find(([kind, message]) => kind === 'followup' && message.source?.handoff === true)[1].source
+    assert.equal(handoff.resume, true)
+    assert.equal(handoff.ownerTurn === true, owners, JSON.stringify(source))
+    opened(env, fresh, handoff)
+    assert.equal(guard(env, fresh) === undefined, owners)
+  }
+  // A later move of a turn that is no longer the owner's alone does not keep an earlier
+  // move's mark, which the trigger it copies still carries.
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  opened(env, 'b', { kind: 'bot', form: 'relay', role: 'handoff', handoff: true, resume: true, ownerTurn: true })
+  env.events.get('b').push({ seq: 13, type: 'user/message', data: { source: { kind: 'bot', role: 'request', senderSessionId: 'a', exchangeId: 'x2' } } })
+  env.rt.liveOf('b').info = { kind: 'bot', form: 'relay', role: 'handoff', handoff: true, resume: true, ownerTurn: true }
+  await env.preStep('b', [], 2)
+  await until(() => env.created.length === 1, 'the fresh part')
+  const fresh = env.state().bots.b.sessionId
+  await until(() => env.agentOf(fresh).calls.length > 0, 'the handoff package')
+  assert.equal(env.agentOf(fresh).calls.find(([kind, message]) => kind === 'followup' && message.source?.handoff === true)[1].source.ownerTurn, false)
+})
+
 test('making a Bot private turns its code mode off', async (t) => {
   const env = await start(t, { saved: withBot({ codeMode: true }) })
   env.rt.checkPrivacyChange = async () => {}

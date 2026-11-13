@@ -181,3 +181,22 @@ test('run_code is refused when the Bot no longer has a shell', async (t) => {
   assert.match(result, /Writer has no shell tool \(bash\) now/)
   assert.doesNotMatch(result, /SPAWN/)
 })
+
+// The reviewer's cases B5c and B5d: the repair card's Retry is the owner's click; a
+// resume after a restart and a routine stay refused.
+test('a program runs in the turn the repair card\'s Retry starts', async (t) => {
+  const env = await boot(t, 'console.log("RAN")')
+  assert.match(await env.run({ kind: 'bot', form: 'relay', role: 'continue', exchangeId: 'r1', senderName: 'You' }), /RAN/)
+})
+
+for (const [what, source] of [
+  ['a resume after a restart', { kind: 'bot', form: 'relay', role: 'resume', resumed: true, exchangeId: 'r2', senderName: 'DS Bot' }],
+  ['a routine', { kind: 'schedule' }],
+]) {
+  test(`run_code is refused in a turn ${what} started`, async (t) => {
+    const env = await boot(t, 'console.log("RAN")')
+    const result = await env.run(source)
+    assert.match(result, /runs only in a turn the user's own message started.*the user can ask you to go on/)
+    assert.doesNotMatch(result, /RAN/)
+  })
+}
