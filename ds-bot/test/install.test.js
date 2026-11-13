@@ -49,6 +49,8 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on tools/result',
     'on session/event',
     'effect ds-bot: lost hand-offs',
+    'effect ds-bot: code mode',
+    'tools guard',
     'on tools/execute',
     'effect ds-bot: identity section',
     'prompt bot-identity 640',
