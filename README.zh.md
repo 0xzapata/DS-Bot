@@ -4,6 +4,8 @@
 
 [English](README.md) | 中文
 
+> **已停止维护（2026-11-14）。** 本复刻版本不再维护，工作已转到 zeron。详见 [DISCONTINUED.md](DISCONTINUED.md)。
+
 ![版本](https://img.shields.io/badge/版本-v0.3_预览-blue) ![DSH](https://img.shields.io/badge/DSH-0.2.2--rc.1-4D6BFE) ![许可](https://img.shields.io/badge/许可-Apache_2.0-green)
 
 DS Bot 是一个基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（简称 dsh）的开源项目，提供独立桌面应用和 dsh 插件两种形态。它将 dsh 改造为 bot 形式，你可以与自己创建的 bot 交流、工作。
