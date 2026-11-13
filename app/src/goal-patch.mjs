@@ -17,6 +17,11 @@
 // its output limit is 78,019 or less failed (MODEL_SWITCH_COMPACTION_FAILED).
 // The row sits in a group inside the preset's `config.plugins`, which a patch
 // cannot address by id.
+//
+// The same overlay adds the `bot-code` preset of a Bot's code mode (ds-bot's
+// botPreset): the composed `standard` preset, restated as above, plus the PTC
+// executor row, which applies to the scope that mounts it. Derived, not copied,
+// so it follows `standard` across DSH upgrades and the owner's preset edits.
 import { dirname, join } from 'node:path'
 import { rmSync, writeFileSync } from 'node:fs'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
@@ -28,6 +33,8 @@ export const GOAL_PATCH_NAME = 'goal.patch.yml'
 export const HEADROOM_TOKENS = 16_384
 
 const PRESET = '@deepseek-ai/dsh-agent-preset'
+export const CODE_PRESET = 'bot-code'
+export const PTC_ROW = { id: 'tool-executor-ptc', name: '@deepseek-ai/dsh-tool-executor-ptc' }
 const COMPACTION = '@deepseek-ai/dsh-compaction-basic'
 const GOAL_ROWS = new Set(['@deepseek-ai/dsh-command-goal', '@deepseek-ai/dsh-tool-goal'])
 
@@ -54,6 +61,10 @@ export function goalPatch(profile) {
   const rows = entries
     .filter(entry => entry.name === PRESET && Array.isArray(entry.config?.plugins) && hasRow(entry.config.plugins))
     .map(entry => ({ id: entry.id, name: entry.name, config: { ...entry.config, plugins: restate(entry.config.plugins) } }))
+  const standard = entries.find(entry => entry.name === PRESET && entry.config?.id === 'standard' && Array.isArray(entry.config.plugins))
+  if (standard !== undefined) {
+    rows.push({ insert: [{ id: `preset-${CODE_PRESET}`, name: PRESET, config: { ...standard.config, id: CODE_PRESET, plugins: [...restate(standard.config.plugins), PTC_ROW] } }] })
+  }
   return rows.length === 0 ? undefined : rows
 }
 
