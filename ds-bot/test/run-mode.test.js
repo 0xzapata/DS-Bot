@@ -831,8 +831,23 @@ test('without a bot-code preset the own chat stays on standard, with one warning
   await settle()
   assert.deepEqual(env.created, [], 'no fresh part for a preset that is not there')
   await env.rt.createSession('Writer', { bot: env.rt.botOf('b') })
-  assert.equal(env.created[0].agentPreset, 'standard')
-  assert.equal(lines.filter(line => /no usable bot-code preset/.test(line)).length, 1)
+  await env.rt.createSession('Writer', { bot: env.rt.botOf('b') })
+  assert.deepEqual(env.created.map(options => options.agentPreset), ['standard', 'standard'])
+  assert.equal(lines.filter(line => /no usable bot-code preset/.test(line)).length, 1, 'one warning, not one per Session')
+  // The switch says why, and does not turn on.
+  const refused = await env.call('update-bot', { id: 'b', codeMode: false })
+  assert.equal(refused.ok, true)
+  assert.match((await env.call('update-bot', { id: 'b', codeMode: true })).error.message, /not available in this install/)
+})
+
+test('the state the settings view reads names why the code mode switch is off limits', async (t) => {
+  const bots = async env => Object.fromEntries((await env.call('state')).value.bots.map(bot => [bot.id, bot.codeModeBlock]))
+  const env = await start(t, { saved: team({ c: { id: 'c', name: 'Vault', role: 'Keep', sessionId: 'c', createdAt: 3, private: true, workDir: '/nonexistent/vault' } }) })
+  env.modes.set('a', 'danger-full-access')
+  assert.deepEqual(await bots(env), { a: 'full-access', b: undefined, c: 'private' })
+  // A DSH with no bot-code preset, read by the first state call.
+  const plain = await start(t, { presets: ['standard'] })
+  assert.deepEqual(await bots(plain), { a: 'unavailable', b: 'unavailable' })
 })
 
 test('a new part and /new keep bot-code', async (t) => {
@@ -850,7 +865,7 @@ test('a new part and /new keep bot-code', async (t) => {
 })
 
 for (const [why, saved, setup, reason] of [
-  ['a private Bot', { ...withBot({ private: true, workDir: '/nonexistent/writer' }), rooms: {} }, () => {}, /Writer is private, and DS Bot's privacy checks cannot read the programs code mode runs/],
+  ['a private Bot', { ...withBot({ private: true, workDir: '/nonexistent/writer' }), rooms: {} }, () => {}, /Writer is private\. A program keeps what it reads between tool calls out of sight, and a path it builds as it runs passes the privacy check/],
   ['Full access', team(), env => env.modes.set('b', 'danger-full-access'), /Writer works with Full access, where a program would run with no sandbox/],
   ['no shell tool', team(), (env) => { env.ctx.tools.schemas = () => [{ name: 'read' }] }, /Writer has no shell tool \(bash\)/],
   ['a Bot on a local agent', withBot({ model: CLI, appliedModel: CLI }), () => {}, /Writer runs on a local agent, which brings its own tools/],

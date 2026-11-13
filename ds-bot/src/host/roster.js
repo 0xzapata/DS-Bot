@@ -76,33 +76,43 @@ export function install(rt) {
   // turns down the group_relay call that a group chat's Session is given. A Session
   // keeps the preset it is made with. A Bot with code mode on (`bot`, its own chat only)
   // gets the app's `bot-code` preset: standard plus DSH's PTC executor.
+  // `codePreset`: whether this DSH has a usable bot-code preset, as last read; undefined
+  // until read. A plain DSH has none: the switch says so, and the warning comes once.
+  let codePreset
   async function botPreset(bot) {
     const presets = ctx.get?.('agentPresets')
     if (presets === undefined) return {}
     const usable = new Set((await presets.list()).filter(preset => preset.broken === undefined).map(preset => preset.id))
+    const had = codePreset
+    codePreset = usable.has(CODE_PRESET)
     if (bot?.codeMode === true) {
-      if (usable.has(CODE_PRESET)) return { agentPreset: CODE_PRESET }
-      rt.warn('ds-bot: %s has code mode on, but this DeepSeek Harness has no usable %s preset; its chat starts on standard', bot.name, CODE_PRESET)
+      if (codePreset) return { agentPreset: CODE_PRESET }
+      if (had !== false) rt.warn('ds-bot: %s has code mode on, but this DeepSeek Harness has no usable %s preset; its chat starts on standard', bot.name, CODE_PRESET)
     }
     return usable.has('standard') ? { agentPreset: 'standard' } : {}
   }
+  const readCodePreset = async () => { if (codePreset === undefined) await botPreset() }
 
   // Why a Bot cannot have code mode, as a kind the settings view names, or undefined.
-  // Code mode is a route to what the Bot can already do (its shell), never more: the
-  // privacy checks do not read programs, and under Full access a program runs with no
-  // sandbox. `agent` is the Bot's own chat, when it is live.
+  // Code mode is a route to what the Bot can already do (its shell), never more. The
+  // privacy checks read a program's text and each tool call it makes, but what a program
+  // keeps between calls is not shown, and a path it builds at run time passes the text
+  // check; under Full access a program runs with no sandbox. `agent` is the Bot's own
+  // chat, when it is live.
   const fullAccess = agent => ctx.get?.('sandboxPolicy')?.resolve({ session: agent.session }).mode === 'danger-full-access'
   const serves = (agent, name) => (typeof ctx.tools?.get === 'function' ? ctx.tools.get(name, agent) !== undefined
     : (ctx.tools?.schemas?.(agent) ?? []).some(schema => schema.name === name))
   function codeModeBlock(bot, agent = ctx.get?.('agents')?.get?.(rt.chatOf(bot.id))) {
     if (bot.private === true) return 'private'
     if (rt.isLocalAgentRef?.(bot.model ?? bot.appliedModel) === true) return 'local'
+    if (codePreset === false) return 'unavailable'
     if (agent === undefined) return undefined
     if (fullAccess(agent)) return 'full-access'
     return serves(agent, 'bash') ? undefined : 'no-shell'
   }
   const CODE_MODE_REFUSALS = {
-    'private': name => `${name} is private, and DS Bot's privacy checks cannot read the programs code mode runs, so a private Bot cannot use code mode.`,
+    'private': name => `${name} is private. A program keeps what it reads between tool calls out of sight, and a path it builds as it runs passes the privacy check of its text, so a private Bot cannot use code mode.`,
+    'unavailable': () => 'Code mode is not available in this install: DeepSeek Harness has no bot-code preset.',
     'local': name => `${name} runs on a local agent, which brings its own tools, so code mode does not apply to it.`,
     'full-access': name => `${name} works with Full access, where a program would run with no sandbox. Choose another permission first.`,
     'no-shell': name => `${name} has no shell tool (bash), so code mode would let it do more than it can now.`,
@@ -1037,7 +1047,7 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
-    ensureWorkspace, keepTeamFolder, createSession, codeModeBlock, ownerOnly, createBot, duplicateBot, updateBot, setFlags,
+    ensureWorkspace, keepTeamFolder, createSession, codeModeBlock, readCodePreset, ownerOnly, createBot, duplicateBot, updateBot, setFlags,
     saveSection, reorderSections, deleteSection,
     roomBusy, autoRoomName, retitleRoom, createRoom, updateRoom, deleteRoom,
     setMain, deleteBot, bootstrap, releaseKickoff, greetingOut, holdKickoffAgain, userWrote, userAnswered,

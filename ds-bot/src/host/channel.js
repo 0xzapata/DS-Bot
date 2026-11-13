@@ -262,6 +262,7 @@ export function install(rt) {
           if (typeof body.locale === 'string' && /^[a-z]{2,3}(-[\w-]+)?$/i.test(body.locale)) uiLocale = body.locale
           if (readOnly === undefined) await rt.bootstrap()
           await rt.catalog()
+          await rt.readCodePreset?.()
           await rt.loadSecrets()
           const answer = liveAnswer()
           if (body.since === state.revision && (body.models === undefined || body.models === modelsKey())) {

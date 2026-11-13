@@ -1,4 +1,4 @@
-import { createElement as h, Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement as h, Fragment, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { paintCss } from './inks.js'
 import { CHARACTERS, PICKER_SHAPES, PICKER_COLUMNS, CHARACTER_COLORS, SHAPES, hasShape, shapeOf, bodyOf, maskBox, holes, nextMarkSerial } from './characters.js'
 import { isMainOf } from './sources.js'
@@ -25,6 +25,7 @@ const CODE_MODE_BLOCKS = {
   'full-access': 'Not with Full access. Choose another permission first.',
   'no-shell': 'Not without the shell tool.',
   'local': 'Not for a Bot on a local agent.',
+  'unavailable': 'Not available in this install.',
 }
 
 // Settings save on blur or Enter, with no Save button; Escape puts the
@@ -61,16 +62,18 @@ export function Card({ title, children }) {
   return h('section', { className: 'bt-set-section' }, title ? h('h3', null, title) : null, h('div', { className: 'bt-set-card' }, children))
 }
 
-export function Switch({ on, label, disabled, onChange }) {
-  return h('button', { type: 'button', role: 'switch', className: 'bt-switch', 'aria-checked': on, 'aria-label': label, disabled, onClick: () => onChange(!on) },
+export function Switch({ on, label, disabled, onChange, describedBy }) {
+  return h('button', { type: 'button', role: 'switch', className: 'bt-switch', 'aria-checked': on, 'aria-label': label, 'aria-describedby': describedBy, disabled, onClick: () => onChange(!on) },
     h('span', { className: 'bt-switch-knob', 'aria-hidden': true }))
 }
 
 // A row with a switch. Not a label: a click on the copy must not flip it twice.
+// The hint, also why a switch is disabled, is the switch's description.
 export function SwitchRow({ label, hint, on, disabled, onChange }) {
+  const hintId = useId()
   return h('div', { className: 'bt-set-row bt-bs-row' },
-    h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, label), hint ? h('span', { className: 'bt-set-hint' }, hint) : null),
-    h(Switch, { on, label, disabled, onChange }))
+    h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, label), hint ? h('span', { className: 'bt-set-hint', id: hintId }, hint) : null),
+    h(Switch, { on, label, disabled, onChange, describedBy: hint ? hintId : undefined }))
 }
 
 function modelHint(bot, roster) {
@@ -228,9 +231,10 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
         h(ModelMenu, { bot, roster, actions, run })),
       h(SwitchRow, {
         label: t('Code mode'),
-        hint: bot.codeModeBlock !== undefined && bot.codeMode !== true ? t(CODE_MODE_BLOCKS[bot.codeModeBlock] ?? CODE_MODE_HINT) : t(CODE_MODE_HINT),
-        on: bot.codeMode === true,
-        disabled: bot.codeMode !== true && bot.codeModeBlock !== undefined,
+        // A Bot whose code mode this install cannot run keeps the choice, shown off.
+        hint: bot.codeModeBlock !== undefined && (bot.codeMode !== true || bot.codeModeBlock === 'unavailable') ? t(CODE_MODE_BLOCKS[bot.codeModeBlock] ?? CODE_MODE_HINT) : t(CODE_MODE_HINT),
+        on: bot.codeMode === true && bot.codeModeBlock !== 'unavailable',
+        disabled: bot.codeModeBlock !== undefined && (bot.codeMode !== true || bot.codeModeBlock === 'unavailable'),
         onChange: codeMode => save({ codeMode }),
       })),
     h(Card, { title: t('Working folder') },

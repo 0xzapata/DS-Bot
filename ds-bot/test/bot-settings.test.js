@@ -61,3 +61,22 @@ test('a private Bot can always turn privacy off, and cannot become Main or be du
   assert.equal(tree.find(node => node.props?.label === 'Main Bot').props.disabled, true)
   assert.equal(tree.some(node => node.props?.onClick && node.props.className === 'bt-set-row bt-bs-row' && JSON.stringify(node).includes('Duplicate')), false)
 })
+
+test('the code mode switch is described by its reason, and is off where this install has no code mode', () => {
+  // The row, then the switch it renders.
+  const rowOf = shown => shown.find(node => node.props?.label === 'Code mode')
+  const render = (row) => {
+    const tree = walk(row.type(row.props))
+    const node = tree.find(each => typeof each.type === 'function')
+    return [...tree, ...walk(node.type(node.props))]
+  }
+  const switchOf = tree => tree.find(node => node.props?.role === 'switch')
+  const hintOf = tree => tree.find(each => each.props?.id !== undefined && each.props.id === switchOf(tree).props['aria-describedby'])?.props.children.join('')
+  const blocked = render(rowOf(settings({ ...bot, codeModeBlock: 'full-access' })))
+  assert.equal(switchOf(blocked).props.disabled, true)
+  assert.equal(hintOf(blocked), 'Not with Full access. Choose another permission first.')
+  const plain = render(rowOf(settings({ ...bot, codeMode: true, codeModeBlock: 'unavailable' })))
+  assert.equal(switchOf(plain).props['aria-checked'], false)
+  assert.equal(switchOf(plain).props.disabled, true)
+  assert.equal(hintOf(plain), 'Not available in this install.')
+})

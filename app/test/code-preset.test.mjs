@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { load } from 'js-yaml'
-import { CODE_PRESET, PTC_ROW, reconcileGoal } from '../src/goal-patch.mjs'
+import { CODE_PRESET, PTC_ROW, goalPatch, reconcileGoal } from '../src/goal-patch.mjs'
 
 const PRESETS = fileURLToPath(new URL('presets/', import.meta.resolve('@deepseek-ai/dsh-web-app/package.json')))
 const layers = readdirSync(PRESETS).filter(name => name.endsWith('.patch.yml'))
@@ -53,4 +53,21 @@ test('a profile edit to standard reaches bot-code', () => {
     const entries = composeEntries([...layers.map(layer => layer.patches), patches, load(readFileSync(file, 'utf8'), { schema: entryListSchema })])
     assert.equal(presetOf(entries, CODE_PRESET).config.plugins.some(row => row.id === 'tool-web'), false)
   } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+const codeRows = rows => (rows ?? []).filter(row => row.insert?.some(entry => entry.config?.id === CODE_PRESET))
+
+test('no bot-code over one the profile already has, by preset id or by row id', () => {
+  const ownPreset = [{ insert: [{ id: 'my-bot-code', name: '@deepseek-ai/dsh-agent-preset', config: { id: CODE_PRESET, plugins: [] } }] }]
+  assert.deepEqual(codeRows(goalPatch({ layers, patches: ownPreset })), [])
+  const ownRow = [{ insert: [{ id: `preset-${CODE_PRESET}`, name: '@deepseek-ai/dsh-persona' }] }]
+  assert.deepEqual(codeRows(goalPatch({ layers, patches: ownRow })), [])
+})
+
+test('no bot-code when standard is absent or turned off', () => {
+  const noStandard = layers.map(layer => ({ patches: layer.patches.filter(row => !(row.insert ?? []).some(entry => entry.config?.id === 'standard')) }))
+  assert.deepEqual(codeRows(goalPatch({ layers: noStandard, patches: [] })), [])
+  assert.deepEqual(codeRows(goalPatch({ layers, patches: [{ id: 'preset-standard', disabled: true }] })), [])
+  // An ordinary profile still gets it.
+  assert.equal(codeRows(goalPatch({ layers, patches: [] })).length, 1)
 })

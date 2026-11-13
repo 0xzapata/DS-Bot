@@ -777,10 +777,11 @@ var ZH = {
   Auto: "自动",
   "Code mode": "代码模式",
   "In its own chat, the Bot runs short programs that call its tools. Turning it on or off starts a new part.": "在自己的聊天中，Bot 运行调用其工具的短程序。开启或关闭都会开始新的一段。",
-  "Not for a private Bot.": "私密 Bot 不能使用。",
+  "Not for a private Bot.": "隐私 Bot 不能使用。",
   "Not with Full access. Choose another permission first.": "“完全权限”下不可用。请先选择其他权限。",
   "Not without the shell tool.": "没有 shell 工具时不可用。",
-  "Not for a Bot on a local agent.": "运行在本地智能体上的 Bot 不能使用。",
+  "Not for a Bot on a local agent.": "运行在本地 Agent 上的 Bot 不能使用。",
+  "Not available in this install.": "当前安装中不可用。",
   "Show program": "显示程序",
   "Hide program": "隐藏程序",
   "Auto · {model}": "自动 · {model}",
@@ -11790,7 +11791,8 @@ var CODE_MODE_BLOCKS = {
   "private": "Not for a private Bot.",
   "full-access": "Not with Full access. Choose another permission first.",
   "no-shell": "Not without the shell tool.",
-  "local": "Not for a Bot on a local agent."
+  "local": "Not for a Bot on a local agent.",
+  "unavailable": "Not available in this install."
 };
 function InlineText({ label, value, placeholder, required = false, maxLength, multiline = false, onSave }) {
   const [draft, setDraft] = (0, import_react26.useState)(null);
@@ -11836,19 +11838,20 @@ function Row({ label, hint, stack = false, children }) {
 function Card2({ title, children }) {
   return (0, import_react26.createElement)("section", { className: "bt-set-section" }, title ? (0, import_react26.createElement)("h3", null, title) : null, (0, import_react26.createElement)("div", { className: "bt-set-card" }, children));
 }
-function Switch({ on, label, disabled, onChange }) {
+function Switch({ on, label, disabled, onChange, describedBy }) {
   return (0, import_react26.createElement)(
     "button",
-    { type: "button", role: "switch", className: "bt-switch", "aria-checked": on, "aria-label": label, disabled, onClick: () => onChange(!on) },
+    { type: "button", role: "switch", className: "bt-switch", "aria-checked": on, "aria-label": label, "aria-describedby": describedBy, disabled, onClick: () => onChange(!on) },
     (0, import_react26.createElement)("span", { className: "bt-switch-knob", "aria-hidden": true })
   );
 }
 function SwitchRow({ label, hint, on, disabled, onChange }) {
+  const hintId = (0, import_react26.useId)();
   return (0, import_react26.createElement)(
     "div",
     { className: "bt-set-row bt-bs-row" },
-    (0, import_react26.createElement)("span", { className: "bt-set-copy" }, (0, import_react26.createElement)("span", { className: "bt-bs-label" }, label), hint ? (0, import_react26.createElement)("span", { className: "bt-set-hint" }, hint) : null),
-    (0, import_react26.createElement)(Switch, { on, label, disabled, onChange })
+    (0, import_react26.createElement)("span", { className: "bt-set-copy" }, (0, import_react26.createElement)("span", { className: "bt-bs-label" }, label), hint ? (0, import_react26.createElement)("span", { className: "bt-set-hint", id: hintId }, hint) : null),
+    (0, import_react26.createElement)(Switch, { on, label, disabled, onChange, describedBy: hint ? hintId : void 0 })
   );
 }
 function modelHint(bot, roster) {
@@ -12079,9 +12082,10 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
       ),
       (0, import_react26.createElement)(SwitchRow, {
         label: t("Code mode"),
-        hint: bot.codeModeBlock !== void 0 && bot.codeMode !== true ? t(CODE_MODE_BLOCKS[bot.codeModeBlock] ?? CODE_MODE_HINT) : t(CODE_MODE_HINT),
-        on: bot.codeMode === true,
-        disabled: bot.codeMode !== true && bot.codeModeBlock !== void 0,
+        // A Bot whose code mode this install cannot run keeps the choice, shown off.
+        hint: bot.codeModeBlock !== void 0 && (bot.codeMode !== true || bot.codeModeBlock === "unavailable") ? t(CODE_MODE_BLOCKS[bot.codeModeBlock] ?? CODE_MODE_HINT) : t(CODE_MODE_HINT),
+        on: bot.codeMode === true && bot.codeModeBlock !== "unavailable",
+        disabled: bot.codeModeBlock !== void 0 && (bot.codeMode !== true || bot.codeModeBlock === "unavailable"),
         onChange: (codeMode) => save({ codeMode })
       })
     ),

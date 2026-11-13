@@ -61,8 +61,10 @@ export function goalPatch(profile) {
   const rows = entries
     .filter(entry => entry.name === PRESET && Array.isArray(entry.config?.plugins) && hasRow(entry.config.plugins))
     .map(entry => ({ id: entry.id, name: entry.name, config: { ...entry.config, plugins: restate(entry.config.plugins) } }))
-  const standard = entries.find(entry => entry.name === PRESET && entry.config?.id === 'standard' && Array.isArray(entry.config.plugins))
-  if (standard !== undefined) {
+  // Not over a bot-code preset the profile has, nor from a standard it turned off.
+  const standard = entries.find(entry => entry.name === PRESET && entry.config?.id === 'standard' && Array.isArray(entry.config.plugins) && entry.disabled !== true)
+  const taken = entries.some(entry => entry.id === `preset-${CODE_PRESET}` || (entry.name === PRESET && entry.config?.id === CODE_PRESET))
+  if (standard !== undefined && !taken) {
     rows.push({ insert: [{ id: `preset-${CODE_PRESET}`, name: PRESET, config: { ...standard.config, id: CODE_PRESET, plugins: [...restate(standard.config.plugins), PTC_ROW] } }] })
   }
   return rows.length === 0 ? undefined : rows
