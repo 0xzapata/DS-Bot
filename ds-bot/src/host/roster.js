@@ -2,9 +2,11 @@
 // the first Main Bot of a new team.
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
-import { MAX_AVATAR_IMAGE, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX, SECTION_COLORS, SECTION_NAME_MAX } from './constants.js'
+import { MAX_AVATAR_IMAGE, REPLY_KIND, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX, SECTION_COLORS, SECTION_NAME_MAX } from './constants.js'
 import { currentColor, isColor, normalize, unquote } from './text.js'
 import { nameProblem } from '../shared/mentions.js'
+
+export const CODE_PRESET = 'bot-code'
 
 const BROWSER_GRANT_KINDS = new Set(['post', 'upload', 'download', 'delete', '*'])
 const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/
@@ -72,18 +74,65 @@ export function install(rt) {
 
   // Under the PTC preset (DSH Desktop's default) a model may call only run_code, which
   // turns down the group_relay call that a group chat's Session is given. A Session
-  // keeps the preset it is made with.
-  async function botPreset() {
+  // keeps the preset it is made with. A Bot with code mode on (`bot`, its own chat only)
+  // gets the app's `bot-code` preset: standard plus DSH's PTC executor.
+  async function botPreset(bot) {
     const presets = ctx.get?.('agentPresets')
     if (presets === undefined) return {}
-    const standard = (await presets.list()).some(preset => preset.id === 'standard' && preset.broken === undefined)
-    return standard ? { agentPreset: 'standard' } : {}
+    const usable = new Set((await presets.list()).filter(preset => preset.broken === undefined).map(preset => preset.id))
+    if (bot?.codeMode === true) {
+      if (usable.has(CODE_PRESET)) return { agentPreset: CODE_PRESET }
+      rt.warn('ds-bot: %s has code mode on, but this DeepSeek Harness has no usable %s preset; its chat starts on standard', bot.name, CODE_PRESET)
+    }
+    return usable.has('standard') ? { agentPreset: 'standard' } : {}
   }
+
+  // Why a Bot cannot have code mode, as a kind the settings view names, or undefined.
+  // Code mode is a route to what the Bot can already do (its shell), never more: the
+  // privacy checks do not read programs, and under Full access a program runs with no
+  // sandbox. `agent` is the Bot's own chat, when it is live.
+  const fullAccess = agent => ctx.get?.('sandboxPolicy')?.resolve({ session: agent.session }).mode === 'danger-full-access'
+  const serves = (agent, name) => (typeof ctx.tools?.get === 'function' ? ctx.tools.get(name, agent) !== undefined
+    : (ctx.tools?.schemas?.(agent) ?? []).some(schema => schema.name === name))
+  function codeModeBlock(bot, agent = ctx.get?.('agents')?.get?.(rt.chatOf(bot.id))) {
+    if (bot.private === true) return 'private'
+    if (rt.isLocalAgentRef?.(bot.model ?? bot.appliedModel) === true) return 'local'
+    if (agent === undefined) return undefined
+    if (fullAccess(agent)) return 'full-access'
+    return serves(agent, 'bash') ? undefined : 'no-shell'
+  }
+  const CODE_MODE_REFUSALS = {
+    'private': name => `${name} is private, and DS Bot's privacy checks cannot read the programs code mode runs, so a private Bot cannot use code mode.`,
+    'local': name => `${name} runs on a local agent, which brings its own tools, so code mode does not apply to it.`,
+    'full-access': name => `${name} works with Full access, where a program would run with no sandbox. Choose another permission first.`,
+    'no-shell': name => `${name} has no shell tool (bash), so code mode would let it do more than it can now.`,
+  }
+
+  // Code mode's rails at call time: the Bot can turn private and the run mode can turn to
+  // Full access after the switch, and in its own chat a program runs only in a turn the
+  // owner's own message started, not one a routine, another Bot or a handoff started.
+  function ownerStarted(agent) {
+    const start = ctx.get?.('agents')?.turnBoundaryOf?.(agent.session)?.openTurnStartSeq
+    if (start === null || start === undefined) return false
+    // Context snapshots (time, memory) and a handoff package are not what started it.
+    const trigger = agent.session.snapshotEvents(start).find(event => event.type === 'user/message' && event.data?.source?.handoff !== true && event.data?.source?.form !== 'snapshot')
+    return trigger?.data?.source?.kind === 'user' || trigger?.data?.source?.kind === REPLY_KIND
+  }
+  ctx.effect(() => ctx.tools.guard((exec) => {
+    // Code mode is a Bot's own chat only; a group Session runs on standard.
+    if (exec.name !== 'run_code' || !rt.chatOwners.has(exec.agent?.id)) return undefined
+    const bot = rt.botOf(rt.selfOf(exec.agent.id))
+    if (bot === undefined) return undefined
+    if (bot.private === true) return `Refused by DS Bot: ${bot.name} is private, and a private Bot does not run programs. Call your tools one at a time instead, or ask the user to turn code mode off.`
+    if (fullAccess(exec.agent)) return 'Refused by DS Bot: this chat works with Full access, where a program would run with no sandbox. Ask the user to choose another permission.'
+    if (!ownerStarted(exec.agent)) return 'Refused by DS Bot: in code mode a program runs only in a turn the user\'s own message started. Say what you need in your reply, and the user can ask you to go on.'
+    return undefined
+  }), 'ds-bot: code mode')
 
   // `dir` is a working folder outside the team workspace. Such a Session is made by cwd
   // alone, so it joins no DSH workspace and the user's own project lists stay as they are —
   // unless the folder is already registered as a workspace, which it then joins (#710).
-  async function createSession(title, { dir } = {}) {
+  async function createSession(title, { dir, bot } = {}) {
     // A Bot's tools run here too; while another dsh holds the team, a new Session would
     // belong to no saved Bot.
     const readOnly = rt.readOnly()
@@ -92,7 +141,7 @@ export function install(rt) {
     if (dir !== undefined && !usable) rt.warn('ds-bot: the working folder %s is gone; %s starts in the team workspace', dir, title)
     const known = usable ? await ctx.workspaceRegistry.resolveByPath(dir) : undefined
     const place = known !== undefined ? { workspaceId: known.id } : usable ? { cwd: dir } : { workspaceId: await ensureWorkspace() }
-    const { sessionId } = await ctx.sessionController.create({ ...place, ...await botPreset() })
+    const { sessionId } = await ctx.sessionController.create({ ...place, ...await botPreset(bot) })
     const agent = await rt.resolveAgent(sessionId)
     await ctx.sessionTitle.rename(agent.session, title)
     return sessionId
@@ -393,6 +442,16 @@ export function install(rt) {
     if (engineChanged && [rt.chatOf(id), ...rt.groupSessionsOf(id)].some(sessionId => rt.hasSubagents?.(sessionId) === true)) {
       throw Object.assign(new Error('A subagent the Bot started is still working; wait for it to finish, then try again'), { code: 'bot/busy' })
     }
+    // Code mode (codeModeBlock) is the user's to turn on; turned on or off, the Bot's
+    // own chat moves on to a fresh part on the other preset (parts.js codeMoved).
+    if (patch.codeMode !== undefined && actorId !== undefined) throw new Error(`Only the user can turn code mode on or off for ${bot.name}`)
+    const codeOn = patch.codeMode === true && bot.codeMode !== true
+    const codeChanged = codeOn || (patch.codeMode === false && bot.codeMode === true)
+    let codeOff = false
+    if (codeOn) {
+      const block = codeModeBlock(bot, await rt.resolveAgent(rt.chatOf(id)))
+      if (block !== undefined) throw new Error(CODE_MODE_REFUSALS[block](bot.name))
+    }
     const autoOn = patch.auto === true && patch.model === undefined
     if (autoOn && rt.isLocalAgentRef?.(bot.model ?? bot.appliedModel) === true) throw new Error(`${bot.name} runs on a local agent, which picks no model by itself`)
     // A new level resolves against the model the Bot will run on: the new one, the
@@ -458,6 +517,13 @@ export function install(rt) {
       if (browserGrants === null) delete bot.browserGrants
       else bot.browserGrants = browserGrants
     }
+    if (codeOn) bot.codeMode = true
+    else if (codeChanged) delete bot.codeMode
+    // A private Bot or one on a local agent cannot keep code mode; its chat moves back.
+    if (bot.codeMode === true && (flag === true || (engineChanged && rt.isLocalAgentRef?.(modelRef) === true))) {
+      delete bot.codeMode
+      codeOff = true
+    }
     if (flag === true) bot.private = true
     else if (flag === false) delete bot.private
     if (patch.section !== undefined || patch.sectionId !== undefined) {
@@ -489,7 +555,7 @@ export function install(rt) {
         .catch(error => rt.warn('ds-bot: profile update for %s not delivered: %s', bot.name, error?.message ?? error))
     }
     if (modelChanged) await rt.applyModel(bot, { force: true })
-    if (engineChanged) void rt.followEngine(bot.id)
+    if (engineChanged || codeChanged || codeOff) void rt.followEngine(bot.id)
     if (moved) void rt.followFolder({ botId: bot.id })
     // A new model lifted what blocked the Bot; a new thinking level alone fixes nothing.
     // releaseKickoff itself leaves when the Bot still lacks a model or holds no greeting.
@@ -956,7 +1022,7 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
-    ensureWorkspace, keepTeamFolder, createSession, createBot, duplicateBot, updateBot, setFlags,
+    ensureWorkspace, keepTeamFolder, createSession, codeModeBlock, createBot, duplicateBot, updateBot, setFlags,
     saveSection, reorderSections, deleteSection,
     roomBusy, autoRoomName, retitleRoom, createRoom, updateRoom, deleteRoom,
     setMain, deleteBot, bootstrap, releaseKickoff, greetingOut, holdKickoffAgain, userWrote, userAnswered,

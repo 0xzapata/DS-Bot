@@ -52,6 +52,8 @@ export function install(rt) {
       ...bot, sessionId: rt.chatOf(bot.id), parts: (segments ?? []).map(segment => segment.sessionId), closed: (segments ?? []).filter(segment => segment.closed === true).map(segment => segment.sessionId), ...(kickoff ? { waiting: true } : {}),
       // `engine` is the Bot's local-agent route, present only on abots.
       ...(rt.localAgentBadge?.(bot.model ?? bot.appliedModel) !== undefined ? { engine: rt.localAgentBadge(bot.model ?? bot.appliedModel) } : {}),
+      // Why code mode cannot be turned on, for the switch in the Bot's settings.
+      ...(rt.codeModeBlock?.(bot) !== undefined ? { codeModeBlock: rt.codeModeBlock(bot) } : {}),
     })),
     // `sessionId` is the group's own Session's current part, `ownParts` its earlier
     // ones; `parts` the members' hidden group Sessions and their earlier segments,

@@ -21,6 +21,7 @@ import { HANDOFF_ACK, HISTORY_TIMEOUT_MS, REPLY_KIND, SOURCE_KIND } from './cons
 import { parseReplies, stackReplies } from '../shared/group-replies.js'
 import { CHECKPOINT_PROMPT, STEWARD_SYSTEM, checkpointCount, checkpointTail, checkpointTailNote, checkpointText, linesFor, parseDecision, stewardRequest } from './steward.js'
 import { RESUME_DELAY_MS } from './resume.js'
+import { CODE_PRESET } from './roster.js'
 import { AFTER_SHARE, createDrafts, returning, seqsOf, sizeAfter } from './draft.js'
 import { clip, createClock, escapeRegExp, estimateTokens, splitRef, textOf } from './text.js'
 import { viaOf } from '../shared/im-platforms.js'
@@ -800,7 +801,7 @@ export function install(rt) {
       : `${head} It is the note written at the end of part ${segment.noteFrom}, carried over unchanged; anything newer is in the messages below, and read_own_chat finds the rest.)\n\n${segment.note}`
   }
 
-  function handoffPackage({ room, self = false, segment, lines, number, resume, overflow, cutoff, failed, bare, folder, manual, engine }) {
+  function handoffPackage({ room, self = false, segment, lines, number, resume, overflow, cutoff, failed, bare, folder, manual, engine, code }) {
     const where = room === undefined ? 'your own chat with the user'
       : self ? `the group chat "${room.name}"` : `your conversation in the group chat "${room.name}"`
     const lookup = room === undefined
@@ -809,6 +810,7 @@ export function install(rt) {
         : 'read_group_chat shows the group\'s latest messages, and read_own_chat your own chat.'
     const reason = failed !== undefined ? `a request in the previous part kept failing (${failed})`
       : overflow ? 'the previous part overflowed the model\'s window'
+        : code !== undefined ? `the user turned code mode ${code ? 'on: you now reach your tools from programs you run with run_code' : 'off: you call your tools directly again'}`
         : engine !== undefined ? `the user changed what you run on, to ${engine}`
           : cutoff ? 'the previous part kept being cut off at the output limit'
             : folder !== undefined ? `${self ? 'the group\'s' : 'your'} working folder changed to ${folder}`
@@ -1023,10 +1025,10 @@ export function install(rt) {
   // `cutoff`: the part kept being cut off at the output limit, so it moves on without
   // asking the model for a note at the same size.
   // `engine`: because the Bot now runs on something else (see engineMoved).
-  function startSwitch(agent, { resume = false, carry = [], info, joined, overflow = false, failed, bare = false, folder = false, manual = false, clean = false, cutoff = false, engine = false, hard = overflow || folder || manual || clean || engine || cutoff } = {}) {
+  function startSwitch(agent, { resume = false, carry = [], info, joined, overflow = false, failed, bare = false, folder = false, manual = false, clean = false, cutoff = false, engine = false, code = false, hard = overflow || folder || manual || clean || engine || cutoff } = {}) {
     const place = placeOf(agent.id)
     if (place === undefined || switches.has(agent.id) || readOnly() || subagentOut(agent.id)) return undefined
-    const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, hard, manual, clean, cutoff, since: Date.now() }
+    const job = { ...place, carry: [...carry], info, joined, resume, overflow, failed, bare, folder, engine, code, hard, manual, clean, cutoff, since: Date.now() }
     switches.set(agent.id, job)
     drafts.drop(agent.id)
     // Settles with the job once the switch is over, moved or not; never rejects.
@@ -1144,6 +1146,16 @@ export function install(rt) {
     return [agent.session.requestHeader?.()?.config, selection].some(route => engineOfRoute(route) !== undefined && engineOfRoute(route) !== wanted)
   }
   const engineMoved = (agent, place, selection) => Date.now() >= (engineRetry.get(agent.id) ?? 0) && offEngine(agent, place, selection)
+  // Whether a Bot's own chat runs on the other side of its code mode switch. A Session
+  // keeps its preset, so the switch moves the chat on, as a change of run mode does. A
+  // Bot whose code preset this DSH lacks stays on standard (roster.js botPreset).
+  async function codeMoved(agent, place) {
+    const bot = place?.roomId === undefined ? rt.botOf(place?.botId) : undefined
+    const presets = ctx.get?.('agentPresets')
+    const current = bot === undefined || agent.ctx === undefined ? undefined : presets?.composedPreset?.(agent.ctx)
+    if (current === undefined || (current === CODE_PRESET) === (bot.codeMode === true)) return false
+    return bot.codeMode !== true || (await presets.list()).some(preset => preset.id === CODE_PRESET && preset.broken === undefined)
+  }
 
   // A part that could not follow its Bot's run mode takes no step on the other side:
   // its input goes back into its inbox and waits for the next try.
@@ -1223,7 +1235,7 @@ export function install(rt) {
     if (signal.aborted) throw signal.reason
     const dir = rt.workDirOf(job)
     const intended = dir !== undefined && await rt.isFolder(dir) ? dir : rt.teamFolder()
-    const freshId = await rt.createSession(room === undefined ? name : bot === undefined ? room.name : `${name} · ${room.name}`, { dir })
+    const freshId = await rt.createSession(room === undefined ? name : bot === undefined ? room.name : `${name} · ${room.name}`, { dir, ...(room === undefined ? { bot } : {}) })
     const picked = await freshRoute(bot, session)
     const routed = picked !== undefined && await selectRoute({ name }, freshId, picked)
     if (picked !== undefined && !routed && job.engine) engineRetry.set(freshId, Date.now() + FOLDER_RETRY_MS)
@@ -1296,9 +1308,10 @@ export function install(rt) {
         folderRetry.set(freshId, Date.now() + FOLDER_RETRY_MS)
         rt.warn('ds-bot: the fresh part of %s did not start in %s; it works in %s', name, intended, cwd)
       }
-      const engine = job.engine ? rt.engineNameOf?.(bot.model ?? bot.appliedModel) : undefined
+      const code = job.code ? bot.codeMode === true : undefined
+      const engine = job.engine && !job.code ? rt.engineNameOf?.(bot.model ?? bot.appliedModel) : undefined
       // A clean start injects nothing: the fresh part opens with an empty context.
-      const text = job.clean ? undefined : handoffPackage({ room, self: bot === undefined, segment, lines: carried, number: number + 1, resume, overflow: job.overflow, cutoff: job.cutoff === true, failed: job.failed, bare: job.bare, folder, manual: job.manual, engine })
+      const text = job.clean ? undefined : handoffPackage({ room, self: bot === undefined, segment, lines: carried, number: number + 1, resume, overflow: job.overflow, cutoff: job.cutoff === true, failed: job.failed, bare: job.bare, folder, manual: job.manual, engine, code })
       if (text !== undefined) {
         freshParts.set(freshId, estimateTokens(text))
         fresh.followup(createUserMessage({ content: [{ type: 'text', text }], source: handoffSource(job, resume) }))
@@ -1411,6 +1424,7 @@ export function install(rt) {
     if (place.botId === undefined) return next()
     if (!readOnly() && !out && engineMoved(agent, place, payload.modelSelection)) return switchBeforeStep(agent, payload, { engine: true })
     if (!out && offEngine(agent, place, payload.modelSelection)) return holdStep(agent, payload)
+    if (!readOnly() && !out && await codeMoved(agent, place)) return switchBeforeStep(agent, payload, { engine: true, code: true })
     // A local agent CLI owns its in-session compaction; the DSH Session keeps the
     // full history for read_own_chat and never condenses or switches on size.
     if (rt.isLocalAgentRef?.(rt.botOf(place.botId)?.model ?? rt.botOf(place.botId)?.appliedModel) === true) return next()
@@ -1537,6 +1551,7 @@ export function install(rt) {
       try {
         const agent = await rt.resolveAgent(sessionId)
         if (agent.status === 'idle' && engineMoved(agent, placeOf(sessionId))) startSwitch(agent, { engine: true })
+        else if (agent.status === 'idle' && await codeMoved(agent, placeOf(sessionId))) startSwitch(agent, { engine: true, code: true })
       } catch (error) {
         rt.warn('ds-bot: %s did not follow its run mode in %s: %s', rt.botOf(botId)?.name ?? botId, sessionId, error)
       }

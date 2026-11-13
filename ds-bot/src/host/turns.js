@@ -111,6 +111,8 @@ export const stripWrittenCalls = text => text
 // Under DSH's PTC presentation the model calls only this tool; the program's sub-calls
 // are the tools it really runs.
 const PROGRAM_TOOL = 'run_code'
+// The longest program text an approval card carries.
+const PROGRAM_MAX = 20_000
 // DSH's delegation tools, named by the tool instance: a spawn child and a fork.
 const SUBAGENT_TOOLS = new Set(['subagent', 'subagent_fork'])
 // A settled child's closing text, or why it ended without one. A child that did
@@ -589,7 +591,9 @@ export function install(rt) {
     const first = keys => keys.map(key => args?.[key]).find(value => typeof value === 'string' && value.trim() !== '')
     const text = first(['description', 'justification'])
     const code = first(['command', 'cmd', 'file_path', 'path', 'url', 'query'])
-    return { ...(text ? { text: text.trim().slice(0, 300) } : {}), ...(code ? { code: code.trim().slice(0, 400) } : {}) }
+    // A run_code program, whole: the owner sees what it would run before allowing it.
+    const program = typeof args?.code === 'string' && args.code.trim() !== '' ? args.code.slice(0, PROGRAM_MAX) : undefined
+    return { ...(text ? { text: text.trim().slice(0, 300) } : {}), ...(code ? { code: code.trim().slice(0, 400) } : {}), ...(program ? { program } : {}) }
   }
 
   // Where a Session speaks, for the diagnostics log.

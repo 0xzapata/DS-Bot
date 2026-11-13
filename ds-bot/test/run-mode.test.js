@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { format } from 'node:util'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { createRuntime } from '../index.js'
 import { LocalAgentAdapter } from '../src/host/local-agents/adapter.js'
@@ -84,7 +85,7 @@ function fakeLlm() {
   }
 }
 
-async function start(t, { saved = team() } = {}) {
+async function start(t, { saved = team(), presets = ['standard', 'bot-code'] } = {}) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-run-mode-')))
   const dsh = join(root, 'dsh')
   const home = join(dsh, 'bot')
@@ -96,7 +97,21 @@ async function start(t, { saved = team() } = {}) {
   process.env.DSH_HOME = dsh
 
   const llm = fakeLlm()
-  const ctx = fakeContext({})
+  // DSH's preset roster, sandbox policy and Agent registry, as far as code mode reads them.
+  // `composed` is the preset each Session was made on; `modes` its sandbox mode; `events`
+  // its log, and `turnStart` where its open turn starts.
+  const composed = new Map()
+  const modes = new Map()
+  const events = new Map()
+  const turnStart = new Map()
+  const ctx = fakeContext({
+    services: {
+      agentPresets: { list: async () => presets.map(id => ({ id })), composedPreset: agentCtx => composed.get(agentCtx.id) ?? 'standard', serviceFor: () => undefined },
+      sandboxPolicy: { resolve: ({ session }) => ({ mode: modes.get(session.id) ?? 'workspace-write' }) },
+      agents: { get: id => agents.get(id), turnBoundaryOf: session => ({ openTurnStartSeq: turnStart.get(session.id) ?? null }) },
+    },
+  })
+  ctx.tools.schemas = () => [{ name: 'bash' }]
   const created = []
   const archived = []
   const selected = []
@@ -108,8 +123,10 @@ async function start(t, { saved = team() } = {}) {
       const calls = []
       agents.set(sessionId, {
         id: sessionId,
+        ctx: { id: sessionId },
         session: {
           id: sessionId, header: { cwd: workspace },
+          snapshotEvents: (from = 0) => (events.get(sessionId) ?? []).filter(event => event.seq >= from),
           requestHeader: () => (lastRoute.has(sessionId) ? { config: lastRoute.get(sessionId) } : undefined),
           deriveMessages: () => [],
         },
@@ -151,6 +168,7 @@ async function start(t, { saved = team() } = {}) {
       create: async (options) => {
         const sessionId = `s${created.length + 1}`
         created.push(options)
+        if (options.agentPreset !== undefined) composed.set(sessionId, options.agentPreset)
         return { sessionId }
       },
       prompt: async () => ({ accepted: true }),
@@ -190,7 +208,7 @@ async function start(t, { saved = team() } = {}) {
   await tool('list_bots', {}, 'a')
   // Everything a route could not register for until the state load has finished.
   await until(() => llm.routes.has('local-acp-fake'), 'the custom routes')
-  return { rt, ctx, llm, call, tool, preStep, state, agentOf, handoffOf, created, archived, selected, lastRoute, starts, startCount, root }
+  return { rt, ctx, llm, call, tool, preStep, state, agentOf, handoffOf, created, archived, selected, lastRoute, starts, startCount, root, composed, modes, events, turnStart }
 }
 
 // -----------------------------------------------------------------------------
@@ -740,4 +758,154 @@ test('only prefixed routes count as local agents on the page', () => {
   assert.deepEqual(badgeOf('local-codex-cli'), ['CX', 'green'])
   assert.deepEqual(badgeOf('local-acp-a1'), ['AC', 'rose'])
   assert.equal(badgeOf('codex-cli'), undefined)
+})
+
+// -----------------------------------------------------------------------------
+// Code mode: a Bot's own chat on the `bot-code` preset (DSH's PTC executor), the switch
+// and its rails. A Session keeps its preset, so the switch moves the chat on like a run mode.
+
+const warnings = (env) => {
+  const lines = []
+  const warn = env.rt.warn
+  env.rt.warn = (...args) => { lines.push(format(...args)); return warn(...args) }
+  return lines
+}
+// The turn the guard reads: one message of `source` opened it.
+const opened = (env, sessionId, source) => {
+  env.turnStart.set(sessionId, 10)
+  env.events.set(sessionId, [
+    { seq: 10, type: 'turn/start', data: { turn: 1 } },
+    { seq: 11, type: 'user/message', data: { source: { kind: 'ds-bot-time-context', form: 'snapshot' } } },
+    { seq: 12, type: 'user/message', data: { source } },
+  ])
+}
+const guard = (env, sessionId, name = 'run_code') => env.ctx.guards.map(each => each({ name, arguments: {}, agent: env.agentOf(sessionId) })).find(reason => reason !== undefined)
+const withBot = (over) => {
+  const saved = team()
+  saved.bots.b = { ...saved.bots.b, ...over }
+  return saved
+}
+
+test('switch off: a Bot\'s own chat is made on standard, as before', async (t) => {
+  const env = await start(t)
+  await env.rt.createSession('Writer', { bot: env.rt.botOf('b') })
+  assert.deepEqual(env.created, [{ workspaceId: 'w1', agentPreset: 'standard' }])
+})
+
+test('switch on: the own chat moves to a fresh part on bot-code; the groups stay on standard', async (t) => {
+  const env = await start(t)
+  const done = await env.call('update-bot', { id: 'b', codeMode: true })
+  assert.equal(done.ok, true)
+  await until(() => env.archived.some(([id]) => id === 'b'), 'the fresh own-chat part')
+  await settle()
+  assert.deepEqual(env.created.map(options => options.agentPreset), ['bot-code'])
+  const saved = env.state()
+  assert.equal(saved.bots.b.codeMode, true)
+  assert.notEqual(saved.bots.b.sessionId, 'b')
+  assert.equal(saved.rooms.r1.sessions.b, 'gb')
+  assert.match(env.handoffOf(saved.bots.b.sessionId), /turned code mode on/)
+  // A group Session of the same Bot is made on standard.
+  await env.rt.createSession('Writer · Ops', { dir: undefined })
+  assert.equal(env.created.at(-1).agentPreset, 'standard')
+})
+
+test('switch off again moves the own chat back to standard', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  env.composed.set('b', 'bot-code')
+  assert.equal((await env.call('update-bot', { id: 'b', codeMode: false })).ok, true)
+  await until(() => env.created.length === 1, 'the fresh part')
+  assert.equal(env.created[0].agentPreset, 'standard')
+  assert.equal(env.state().bots.b.codeMode, undefined)
+})
+
+test('without a bot-code preset the own chat stays on standard, with one warning', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }), presets: ['standard'] })
+  const lines = warnings(env)
+  await env.rt.followEngine('b')
+  await settle()
+  assert.deepEqual(env.created, [], 'no fresh part for a preset that is not there')
+  await env.rt.createSession('Writer', { bot: env.rt.botOf('b') })
+  assert.equal(env.created[0].agentPreset, 'standard')
+  assert.equal(lines.filter(line => /no usable bot-code preset/.test(line)).length, 1)
+})
+
+test('a new part and /new keep bot-code', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  env.composed.set('b', 'bot-code')
+  await env.rt.newPart('b')
+  await until(() => env.created.length === 1, 'the new part')
+  assert.equal(env.created[0].agentPreset, 'bot-code')
+  const now = env.state().bots.b.sessionId
+  await until(() => env.agentOf(now).status === 'idle')
+  const fresh = await env.rt.newSession('b')
+  assert.equal(env.created.length, 2)
+  assert.equal(env.created[1].agentPreset, 'bot-code')
+  assert.notEqual(fresh.sessionId, now)
+})
+
+for (const [why, saved, setup, reason] of [
+  ['a private Bot', { ...withBot({ private: true, workDir: '/nonexistent/writer' }), rooms: {} }, () => {}, /Writer is private, and DS Bot's privacy checks cannot read the programs code mode runs/],
+  ['Full access', team(), env => env.modes.set('b', 'danger-full-access'), /Writer works with Full access, where a program would run with no sandbox/],
+  ['no shell tool', team(), (env) => { env.ctx.tools.schemas = () => [{ name: 'read' }] }, /Writer has no shell tool \(bash\)/],
+  ['a Bot on a local agent', withBot({ model: CLI, appliedModel: CLI }), () => {}, /Writer runs on a local agent, which brings its own tools/],
+]) {
+  test(`the switch is refused for ${why}`, async (t) => {
+    const env = await start(t, { saved })
+    setup(env)
+    const refused = await env.call('update-bot', { id: 'b', codeMode: true })
+    assert.equal(refused.ok, false)
+    assert.match(refused.error.message, reason)
+    assert.equal(env.state().bots.b.codeMode, undefined)
+    assert.deepEqual(env.created, [])
+    // The settings view names the same reason, so the switch shows disabled.
+    assert.ok(['private', 'full-access', 'no-shell', 'local'].includes(env.rt.codeModeBlock(env.rt.botOf('b'))))
+  })
+}
+
+test('a Bot cannot turn code mode on for itself', async (t) => {
+  const env = await start(t)
+  assert.match(await env.tool('update_bot', { codeMode: true }, 'b'), /Updated Writer/)
+  await assert.rejects(env.rt.updateBot('b', { codeMode: true }, 'b'), /Only the user can turn code mode on/)
+  assert.equal(env.state().bots.b.codeMode, undefined)
+})
+
+test('the guard lets run_code run in a turn the owner started, and refuses it otherwise', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  opened(env, 'b', { kind: 'user' })
+  assert.equal(guard(env, 'b'), undefined)
+  // Full access set after the switch.
+  env.modes.set('b', 'danger-full-access')
+  assert.match(guard(env, 'b'), /Full access, where a program would run with no sandbox/)
+  env.modes.delete('b')
+  // A routine, another Bot, a handoff and a kickoff do not start a program.
+  for (const source of [{ kind: 'schedule' }, { kind: 'bot', role: 'request', senderSessionId: 'a' }, { kind: 'bot', role: 'kickoff' }]) {
+    opened(env, 'b', source)
+    assert.match(guard(env, 'b'), /runs only in a turn the user's own message started/)
+  }
+  // A Bot made private later.
+  opened(env, 'b', { kind: 'user' })
+  env.rt.botOf('b').private = true
+  assert.match(guard(env, 'b'), /Writer is private, and a private Bot does not run programs/)
+  // Other tools and other Sessions are left alone.
+  assert.equal(guard(env, 'b', 'bash'), undefined)
+  assert.equal(guard(env, 'gb'), undefined)
+})
+
+test('making a Bot private turns its code mode off', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  env.rt.checkPrivacyChange = async () => {}
+  env.composed.set('b', 'bot-code')
+  assert.equal((await env.call('update-bot', { id: 'b', private: true })).ok, true)
+  assert.equal(env.state().bots.b.codeMode, undefined)
+  await until(() => env.created.length === 1, 'the fresh part on standard')
+  assert.equal(env.created[0].agentPreset, 'standard')
+})
+
+test('an approval for a program carries the program text', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  const code = 'const files = await tools.glob({ pattern: "*.md" })\nreturn files'
+  for (const listener of env.ctx.listeners.get('session/event') ?? []) {
+    if (listener.length >= 2) listener({ id: 'b' }, { type: 'tool/call', seq: 1, data: { callId: 'c9', name: 'run_code', arguments: JSON.stringify({ description: 'List notes', code }) } })
+  }
+  assert.deepEqual(env.rt.callDetail('b', 'c9'), { text: 'List notes', program: code })
 })
