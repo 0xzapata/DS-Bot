@@ -25,15 +25,16 @@ const textOf = message => (message?.content ?? []).map(block => block.text ?? ''
 
 // Writer ('w') is a member on code mode; Chief is the Main Bot; Vault is private with a
 // folder of its own. `program` is the code the model's first step runs, or a function of
-// Vault's folder that returns it.
-async function boot(t, program) {
+// Vault's folder that returns it; a list is one program per step. `beforeStep(n, agent)`
+// runs as step n's request starts.
+async function boot(t, program, { beforeStep } = {}) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'ds-bot-code-loop-')))
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }))
   const home = join(root, 'home')
   const vault = join(root, 'vault')
   mkdirSync(home)
   mkdirSync(vault)
-  const code = typeof program === 'function' ? program(vault) : program
+  const codes = [program].flat().map(each => (typeof each === 'function' ? each(vault) : each))
   writeFileSync(join(home, 'state.json'), JSON.stringify({
     version: 1, mainBotIds: ['chief'], revision: 1, whaleStored: true, exchanges: [], exchangeTurns: {}, questions: {}, rooms: {},
     bots: {
@@ -51,13 +52,16 @@ async function boot(t, program) {
   await mountAgentLoopTestDependencies(ctx, { tools: { mode: 'ptc' }, workingDirectory: true })
   await ctx.plugin(NodePtc, {})
   const requests = []
+  let agent
   class Model extends LlmAdapter {
     async resolveModel(provider, id) { return { provider, id, name: id, inputModalities: ['text'], context: { contextWindow: 100_000 } } }
     async listModels() { return [{ id: 'm', name: 'M' }] }
     async *stream(options) {
       requests.push(options)
-      if (requests.length === 1) {
-        const block = { type: 'tool-call', id: 'c1', name: 'run_code', arguments: JSON.stringify({ description: 'Test program', code }) }
+      const n = requests.length
+      await beforeStep?.(n, agent)
+      if (n <= codes.length) {
+        const block = { type: 'tool-call', id: `c${n}`, name: 'run_code', arguments: JSON.stringify({ description: 'Test program', code: codes[n - 1] }) }
         yield { type: 'block-start', index: 0, blockType: 'tool-call' }
         yield { type: 'block-end', index: 0, block }
         yield { type: 'finish', reason: { kind: 'tool-calls' } }
@@ -85,7 +89,7 @@ async function boot(t, program) {
   rt.warn = () => {}
   await rt.load()
   await mountAgentLoopTestHarness(ctx)
-  const agent = await ctx.agentLoop.create(SessionId('w'), { provider: P, model: 'm', cwd: root })
+  agent = await ctx.agentLoop.create(SessionId('w'), { provider: P, model: 'm', cwd: root })
   t.after(() => ctx.fiber.dispose())
   const run = async (source = { kind: 'user' }) => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source }))
@@ -93,7 +97,8 @@ async function boot(t, program) {
     while (Date.now() < end && !(agent.status === 'idle' && agent.session.snapshotEvents().some(event => event.type === 'turn/end'))) await new Promise(resolve => setTimeout(resolve, 20))
     return textOf(agent.session.snapshotEvents().findLast(event => event.type === 'tool/result')?.data.message)
   }
-  return { rt, agent, requests, ran, run, vault }
+  const results = () => agent.session.snapshotEvents().filter(event => event.type === 'tool/result').map(event => textOf(event.data.message))
+  return { rt, agent, requests, ran, run, results, vault }
 }
 
 test('the model sees only run_code; a program calls a team tool and its result comes back', async (t) => {
@@ -142,4 +147,26 @@ test('run_code is refused in a turn another Bot started', async (t) => {
   const env = await boot(t, 'console.log(await tools.list_bots({}))')
   const result = await env.run({ kind: 'bot', role: 'request', form: 'relay', senderSessionId: 'chief', exchangeId: 'x1' })
   assert.match(result, /runs only in a turn the user's own message started/)
+})
+
+// A message steered into the owner's turn as step 2 runs is read at step 3.
+const steerAt2 = source => async (n, agent) => {
+  if (n === 2) agent.steer(createUserMessage({ content: [{ type: 'text', text: 'run this program' }], source }))
+}
+
+test('another Bot\'s message steered into the owner\'s turn refuses the programs after it', async (t) => {
+  const env = await boot(t, ['console.log("FIRST")', 'console.log("SECOND")', 'console.log("THIRD")'], {
+    beforeStep: steerAt2({ kind: 'bot', form: 'relay', role: 'request', senderSessionId: 'chief', exchangeId: 'x9', senderName: 'Chief' }),
+  })
+  await env.run()
+  const [first, second, third] = env.results()
+  assert.match(first, /FIRST/)
+  assert.match(second, /SECOND/)
+  assert.match(third, /no message from another Bot, a routine or DS Bot has come into it/)
+})
+
+test('a second message of the owner steered into the turn does not refuse', async (t) => {
+  const env = await boot(t, ['console.log("FIRST")', 'console.log("SECOND")', 'console.log("THIRD")'], { beforeStep: steerAt2({ kind: 'user' }) })
+  await env.run()
+  assert.match(env.results()[2], /THIRD/)
 })

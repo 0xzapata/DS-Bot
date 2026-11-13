@@ -891,6 +891,30 @@ test('the guard lets run_code run in a turn the owner started, and refuses it ot
   assert.equal(guard(env, 'gb'), undefined)
 })
 
+test('the guard refuses run_code once any message in the turn is not the owner\'s', async (t) => {
+  const env = await start(t, { saved: withBot({ codeMode: true }) })
+  const add = source => env.events.get('b').push({ seq: env.events.get('b').length + 10, type: 'user/message', data: { source } })
+  opened(env, 'b', { kind: 'user' })
+  add({ kind: 'ds-bot-memory-recall', form: 'snapshot' })
+  add({ kind: 'user' })
+  add({ kind: 'user-question-reply', callId: 'q1', outcome: 'answered' })
+  assert.equal(guard(env, 'b'), undefined)
+  for (const source of [{ kind: 'bot', role: 'request', senderSessionId: 'a' }, { kind: 'schedule' }, { kind: 'bot', role: 'kickoff' }, { kind: 'bot', form: 'relay', role: 'handoff', handoff: true, resume: true }, { kind: 'tool-jobs', form: 'notice' }, {}]) {
+    opened(env, 'b', { kind: 'user' })
+    add(source)
+    add({ kind: 'user' })
+    assert.match(guard(env, 'b'), /no message from another Bot, a routine or DS Bot has come into it/, JSON.stringify(source))
+  }
+  // The package that opens a fresh part is DS Bot's context, but a turn needs a message
+  // of the owner; a DSH notice (a job that ended) is not the owner's.
+  opened(env, 'b', { kind: 'bot', form: 'relay', role: 'handoff', handoff: true })
+  assert.match(guard(env, 'b'), /runs only in a turn the user's own message started/)
+  add({ kind: 'user' })
+  assert.equal(guard(env, 'b'), undefined)
+  add({ kind: 'tool-jobs', form: 'notice' })
+  assert.match(guard(env, 'b'), /no message from another Bot, a routine or DS Bot has come into it/)
+})
+
 test('making a Bot private turns its code mode off', async (t) => {
   const env = await start(t, { saved: withBot({ codeMode: true }) })
   env.rt.checkPrivacyChange = async () => {}

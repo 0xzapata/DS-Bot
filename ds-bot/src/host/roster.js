@@ -109,14 +109,19 @@ export function install(rt) {
   }
 
   // Code mode's rails at call time: the Bot can turn private and the run mode can turn to
-  // Full access after the switch, and in its own chat a program runs only in a turn the
-  // owner's own message started, not one a routine, another Bot or a handoff started.
-  function ownerStarted(agent) {
+  // Full access after the switch, and in its own chat a program runs only while every
+  // message of the turn is the owner's: one from another Bot, a routine, a relay, a
+  // kickoff or a resume, also one steered in mid-turn, refuses run_code to the turn's end.
+  // Context is not a message: snapshots (time, memory, runtime), DSH's instructions and
+  // skill catalog, and the package that opens a fresh part.
+  const CONTEXT_FORMS = new Set(['snapshot', 'instructions', 'catalog'])
+  const isContext = source => CONTEXT_FORMS.has(source?.form) || (source?.handoff === true && source.resume !== true)
+  const isOwners = source => source?.kind === 'user' || source?.kind === REPLY_KIND
+  function ownerOnly(agent) {
     const start = ctx.get?.('agents')?.turnBoundaryOf?.(agent.session)?.openTurnStartSeq
     if (start === null || start === undefined) return false
-    // Context snapshots (time, memory) and a handoff package are not what started it.
-    const trigger = agent.session.snapshotEvents(start).find(event => event.type === 'user/message' && event.data?.source?.handoff !== true && event.data?.source?.form !== 'snapshot')
-    return trigger?.data?.source?.kind === 'user' || trigger?.data?.source?.kind === REPLY_KIND
+    const sources = agent.session.snapshotEvents(start).filter(event => event.type === 'user/message').map(event => event.data?.source).filter(source => !isContext(source))
+    return sources.length > 0 && sources.every(isOwners)
   }
   ctx.effect(() => ctx.tools.guard((exec) => {
     // Code mode is a Bot's own chat only; a group Session runs on standard.
@@ -125,7 +130,7 @@ export function install(rt) {
     if (bot === undefined) return undefined
     if (bot.private === true) return `Refused by DS Bot: ${bot.name} is private, and a private Bot does not run programs. Call your tools one at a time instead, or ask the user to turn code mode off.`
     if (fullAccess(exec.agent)) return 'Refused by DS Bot: this chat works with Full access, where a program would run with no sandbox. Ask the user to choose another permission.'
-    if (!ownerStarted(exec.agent)) return 'Refused by DS Bot: in code mode a program runs only in a turn the user\'s own message started. Say what you need in your reply, and the user can ask you to go on.'
+    if (!ownerOnly(exec.agent)) return 'Refused by DS Bot: in code mode a program runs only in a turn the user\'s own message started, and only while no message from another Bot, a routine or DS Bot has come into it. Say what you need in your reply, and the user can ask you to go on.'
     return undefined
   }), 'ds-bot: code mode')
 
